@@ -1,5 +1,11 @@
+pub mod ai;
+pub mod combat;
 pub mod entity;
+pub mod fov;
+pub mod item;
 pub mod map;
+pub mod messagelog;
+pub mod pathfinding;
 pub mod sub_world;
 pub mod tile;
 pub mod world_manager;

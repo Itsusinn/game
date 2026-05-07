@@ -2,6 +2,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use crate::world::entity::{EntityManager, EntityType};
+use crate::world::item::{ItemManager, ItemType};
 use crate::world::map::GameMap;
 use crate::world::tile::{Tile, TileType};
 use protocol::{Coord, SUBWORLD_SIZE};
@@ -15,6 +16,7 @@ const MAX_ATTEMPTS: usize = 200;
 pub fn generate_sub_world(
     map: &mut GameMap,
     entities: &mut EntityManager,
+    items: &mut ItemManager,
     world_seed: u64,
     sw_id: (i64, i64),
 ) -> Coord {
@@ -45,7 +47,6 @@ pub fn generate_sub_world(
         }
     }
 
-    // Connect rooms with corridors
     for i in 1..rooms.len() {
         let (x1, y1, w1, h1) = rooms[i - 1];
         let (x2, y2, w2, h2) = rooms[i];
@@ -62,7 +63,6 @@ pub fn generate_sub_world(
             carve_h_corridor(map, cx1, cx2, cy2);
         }
 
-        // Place doors at corridor entrances
         if rng.gen_bool(0.4) {
             let door_x = cx1 + rng.gen_range(-1..=1);
             let door_y = cy1 + rng.gen_range(-1..=1);
@@ -72,7 +72,6 @@ pub fn generate_sub_world(
         }
     }
 
-    // Spawn enemies
     for (rx, ry, rw, rh) in &rooms {
         if *rw * *rh < 15 {
             continue;
@@ -89,9 +88,23 @@ pub fn generate_sub_world(
             };
             entities.spawn(name, etype, Coord::new(ex, ey), hp);
         }
+
+        // Spawn ground items
+        let item_count = rng.gen_range(0..=2);
+        for _ in 0..item_count {
+            let ix = rng.gen_range(*rx + 1..rx + rw - 1);
+            let iy = rng.gen_range(*ry + 1..ry + rh - 1);
+            let (item_name, item_type) = match rng.gen_range(0..5) {
+                0 => ("Short Sword", ItemType::Weapon { damage: 5, attack_bonus: 1 }),
+                1 => ("Leather Armor", ItemType::Armor { defense: 2 }),
+                2 => ("Health Potion", ItemType::Potion { heal: 20 }),
+                3 => ("Bread", ItemType::Food { nutrition: 30 }),
+                _ => ("Scroll of Light", ItemType::Scroll { effect: "light".into() }),
+            };
+            items.spawn_ground(item_name, item_type, Coord::new(ix, iy), 1);
+        }
     }
 
-    // Spawn stairs at edges
     if !rooms.is_empty() {
         let (sx, sy, sw, sh) = rooms[0];
         map.set_tile(
@@ -109,7 +122,6 @@ pub fn generate_sub_world(
         );
     }
 
-    // Return spawn point (center of first room)
     if let Some((rx, ry, rw, rh)) = rooms.first() {
         Coord::new(rx + rw / 2, ry + rh / 2)
     } else {

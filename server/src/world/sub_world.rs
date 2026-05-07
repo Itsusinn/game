@@ -1,9 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tokio::sync::mpsc;
 
+use crate::world::ai;
+use crate::world::combat;
 use crate::world::entity::{EntityManager, EntityType};
+use crate::world::fov;
+use crate::world::item::ItemManager;
 use crate::world::map::GameMap;
+use crate::world::messagelog::MessageLog;
 use crate::world::tile::TileType;
 use crate::world::worldgen;
 use protocol::*;
@@ -12,9 +17,10 @@ pub struct SubWorld {
     pub id: (i64, i64),
     pub map: GameMap,
     pub entities: EntityManager,
+    pub items: ItemManager,
     pub players: HashMap<u32, PlayerState>,
     pub turn: u64,
-    pub message_log: Vec<LogEntry>,
+    pub log: MessageLog,
 }
 
 pub struct PlayerState {
@@ -47,15 +53,17 @@ impl SubWorld {
     pub fn new(id: (i64, i64), world_seed: u64) -> Self {
         let mut map = GameMap::new();
         let mut entities = EntityManager::new();
-        worldgen::generate_sub_world(&mut map, &mut entities, world_seed, id);
+        let mut items = ItemManager::new();
+        worldgen::generate_sub_world(&mut map, &mut entities, &mut items, world_seed, id);
 
         Self {
             id,
             map,
             entities,
+            items,
             players: HashMap::new(),
             turn: 0,
-            message_log: Vec::new(),
+            log: MessageLog::default(),
         }
     }
 
@@ -84,11 +92,10 @@ impl SubWorld {
     async fn handle_cmd(&mut self, cmd: SubWorldCmd) {
         match cmd {
             SubWorldCmd::PlayerJoin { player_id, pos, tx } => {
-                self.message_log.push(LogEntry {
-                    text: format!("Player {} joined sub-world {:?}", player_id, self.id),
-                    color: 0x00FF00,
-                    turn: self.turn,
-                });
+                self.log.info(
+                    self.turn,
+                    format!("Player {} joined sub-world {:?}", player_id, self.id),
+                );
 
                 self.entities.spawn(
                     format!("Player_{}", player_id),
@@ -110,7 +117,6 @@ impl SubWorld {
                     },
                 );
 
-                // Send initial world state to the new player
                 let state = self.build_world_state_for(player_id);
                 if let Some(ps) = self.players.get(&player_id) {
                     let _ = ps.tx.send(state).await;
@@ -120,11 +126,10 @@ impl SubWorld {
             SubWorldCmd::PlayerLeave { player_id } => {
                 self.players.remove(&player_id);
                 self.entities.remove(player_id);
-                self.message_log.push(LogEntry {
-                    text: format!("Player {} left sub-world {:?}", player_id, self.id),
-                    color: 0xFF4444,
-                    turn: self.turn,
-                });
+                self.log.info(
+                    self.turn,
+                    format!("Player {} left sub-world {:?}", player_id, self.id),
+                );
             }
 
             SubWorldCmd::PlayerAction {
@@ -134,7 +139,7 @@ impl SubWorld {
             } => {
                 if let Some(ps) = self.players.get(&player_id) {
                     let pos = ps.pos;
-                    let new_pos = match action {
+                    let new_pos = match &action {
                         ActionType::MoveUp => Coord::new(pos.x, pos.y - 1),
                         ActionType::MoveDown => Coord::new(pos.x, pos.y + 1),
                         ActionType::MoveLeft => Coord::new(pos.x - 1, pos.y),
@@ -144,15 +149,19 @@ impl SubWorld {
                         ActionType::MoveDownLeft => Coord::new(pos.x - 1, pos.y + 1),
                         ActionType::MoveDownRight => Coord::new(pos.x + 1, pos.y + 1),
                         ActionType::Wait => pos,
+                        ActionType::MeleeAttack => {
+                            self.handle_player_attack(player_id);
+                            return;
+                        }
+                        ActionType::Pickup => {
+                            self.handle_pickup(player_id);
+                            return;
+                        }
                         _ => {
-                            self.message_log.push(LogEntry {
-                                text: format!(
-                                    "Player {} action {:?} not implemented",
-                                    player_id, action
-                                ),
-                                color: 0xFFFF00,
-                                turn: self.turn,
-                            });
+                            self.log.info(
+                                self.turn,
+                                format!("Player {} action {:?} not implemented", player_id, action),
+                            );
                             return;
                         }
                     };
@@ -168,28 +177,19 @@ impl SubWorld {
                             if let Some(ps) = self.players.get_mut(&player_id) {
                                 ps.pos = new_pos;
 
-                                // Check for stairs
                                 if let Some(tile) = self.map.get_tile(new_pos.x, new_pos.y) {
                                     match tile.tile_type {
                                         TileType::StairsDown => {
-                                            self.message_log.push(LogEntry {
-                                                text: format!(
-                                                    "Player {} found stairs down",
-                                                    player_id
-                                                ),
-                                                color: 0xFFFF00,
-                                                turn: self.turn,
-                                            });
+                                            self.log.info(
+                                                self.turn,
+                                                format!("Player {} found stairs down", player_id),
+                                            );
                                         }
                                         TileType::StairsUp => {
-                                            self.message_log.push(LogEntry {
-                                                text: format!(
-                                                    "Player {} found stairs up",
-                                                    player_id
-                                                ),
-                                                color: 0xFFFF00,
-                                                turn: self.turn,
-                                            });
+                                            self.log.info(
+                                                self.turn,
+                                                format!("Player {} found stairs up", player_id),
+                                            );
                                         }
                                         _ => {}
                                     }
@@ -202,8 +202,99 @@ impl SubWorld {
         }
     }
 
+    fn handle_player_attack(&mut self, player_id: u32) {
+        let player_pos = match self.players.get(&player_id) {
+            Some(ps) => ps.pos,
+            None => return,
+        };
+
+        // Find adjacent enemy
+        let target = self
+            .entities
+            .all()
+            .filter(|e| !matches!(e.entity_type, EntityType::Player))
+            .find(|e| {
+                let dx = (e.pos.x - player_pos.x).abs();
+                let dy = (e.pos.y - player_pos.y).abs();
+                dx <= 1 && dy <= 1
+            });
+
+        let target_id = match target {
+            Some(e) => e.id,
+            None => {
+                self.log.info(self.turn, "No enemy nearby to attack.");
+                return;
+            }
+        };
+
+        let (atk, _, base_dmg) = combat::get_entity_stats(0);
+        let (_, def, _) = combat::get_entity_stats(
+            self.entities
+                .get(target_id)
+                .map(|e| e.entity_type.to_u8())
+                .unwrap_or(1),
+        );
+
+        let result = combat::melee_attack(atk, def, base_dmg);
+        let attacker_name = format!("Player_{}", player_id);
+        let defender_name = self
+            .entities
+            .get(target_id)
+            .map(|e| e.name.clone())
+            .unwrap_or_else(|| "unknown".into());
+
+        self.log.combat(
+            self.turn,
+            &attacker_name,
+            &defender_name,
+            result.damage,
+            result.critical,
+        );
+
+        if result.damage > 0 {
+            if let Some(target) = self.entities.get_mut(target_id) {
+                target.hp -= result.damage;
+                if target.hp <= 0 {
+                    self.log.death(self.turn, &defender_name);
+                    self.entities.remove(target_id);
+                }
+            }
+        }
+    }
+
+    fn handle_pickup(&mut self, player_id: u32) {
+        let player_pos = match self.players.get(&player_id) {
+            Some(ps) => ps.pos,
+            None => return,
+        };
+
+        let ground: Vec<u32> = self
+            .items
+            .items_at(player_pos.x, player_pos.y)
+            .iter()
+            .map(|gi| gi.stack.item.id)
+            .collect();
+
+        if ground.is_empty() {
+            self.log.info(self.turn, "Nothing to pick up here.");
+            return;
+        }
+
+        for item_id in ground {
+            if self
+                .items
+                .remove_at(player_pos.x, player_pos.y, item_id)
+                .is_some()
+            {
+                self.log.info(
+                    self.turn,
+                    format!("Player {} picks up an item.", player_id),
+                );
+            }
+        }
+    }
+
     fn advance_ai(&mut self) {
-        // Move enemies toward nearest player
         let player_positions: Vec<(u32, Coord)> =
             self.players.iter().map(|(id, ps)| (*id, ps.pos)).collect();
 
@@ -222,25 +313,54 @@ impl SubWorld {
                 continue;
             }
 
-            let (_pid, target_pos) = player_positions[0];
-            let dx = (target_pos.x - entity.pos.x).signum();
-            let dy = (target_pos.y - entity.pos.y).signum();
+            let target = player_positions[0].1;
+            let (_, def, _) = combat::get_entity_stats(entity.entity_type.to_u8());
 
-            let new_pos = Coord::new(entity.pos.x + dx, entity.pos.y + dy);
-            if self.map.is_passable(new_pos.x, new_pos.y)
-                && self
-                    .entities
-                    .entities_in_radius(new_pos.x, new_pos.y, 0)
-                    .is_empty()
-            {
-                self.entities.move_entity(eid, new_pos);
+            // Check if adjacent to player for attack
+            let dist = (entity.pos.x - target.x).abs().max((entity.pos.y - target.y).abs());
+            if dist <= 1 {
+                let (atk, _, base_dmg) = combat::get_entity_stats(entity.entity_type.to_u8());
+                let result = combat::melee_attack(atk, def, base_dmg);
+
+                let player_name = format!("Player_{}", player_positions[0].0);
+                self.log.combat(
+                    self.turn,
+                    &entity.name,
+                    &player_name,
+                    result.damage,
+                    result.critical,
+                );
+
+                if result.damage > 0 {
+                    if let Some(ps) = self.players.get_mut(&player_positions[0].0) {
+                        ps.hp -= result.damage;
+                        if ps.hp <= 0 {
+                            ps.hp = 0;
+                            self.log.death(self.turn, &player_name);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Use AI to move toward player
+            if let Some(action) = ai::ai_action(entity, &self.map, &self.entities, target, 8, 15) {
+                if let Some(new_pos) = ai_action_to_pos(entity.pos, &action) {
+                    if self.map.is_passable(new_pos.x, new_pos.y)
+                        && self
+                            .entities
+                            .entities_in_radius(new_pos.x, new_pos.y, 0)
+                            .is_empty()
+                    {
+                        self.entities.move_entity(eid, new_pos);
+                    }
+                }
             }
         }
     }
 
     async fn broadcast_all(&mut self) {
         let player_ids: Vec<u32> = self.players.keys().copied().collect();
-
         for pid in player_ids {
             let state = self.build_world_state_for(pid);
             if let Some(ps) = self.players.get(&pid) {
@@ -262,43 +382,48 @@ impl SubWorld {
             }
         };
 
-        let view_radius = 15;
+        let view_radius: i32 = 15;
         let (cx, cy) = (ps.pos.x, ps.pos.y);
 
-        // Mark tiles as explored
-        for dy in -view_radius..=view_radius {
-            for dx in -view_radius..=view_radius {
-                self.map.set_explored(cx + dx, cy + dy, true);
-            }
+        // Compute FOV
+        let origin = Coord::new(cx, cy);
+        let mut visible = HashSet::new();
+        fov::compute_fov(&self.map, origin, view_radius, &mut visible);
+
+        // Mark visible tiles as explored
+        for coord in &visible {
+            self.map.set_explored(coord.x, coord.y, true);
         }
 
-        let visible_tiles: Vec<TileData> = self
-            .map
-            .tiles_in_radius(cx, cy, view_radius)
+        // Also mark tiles around visible as explored (explored but not currently visible)
+        let visible_tiles: Vec<TileData> = visible
             .iter()
-            .map(|(x, y, tile)| {
-                let global = local_to_global(Coord::new(*x, *y), self.id);
-                TileData {
-                    pos: global,
-                    tile_type: match tile.tile_type {
-                        TileType::Floor => 0,
-                        TileType::Wall => 1,
-                        TileType::Door { open } => if open { 2 } else { 3 },
-                        TileType::Water => 4,
-                        TileType::StairsUp => 5,
-                        TileType::StairsDown => 6,
-                    },
-                    flags: tile.flags,
-                    fg_color: tile.fg_color(),
-                    bg_color: tile.bg_color(),
-                }
+            .filter_map(|coord| {
+                self.map.get_tile(coord.x, coord.y).map(|tile| {
+                    let global = local_to_global(*coord, self.id);
+                    TileData {
+                        pos: global,
+                        tile_type: match tile.tile_type {
+                            TileType::Floor => 0,
+                            TileType::Wall => 1,
+                            TileType::Door { open } => if open { 2 } else { 3 },
+                            TileType::Water => 4,
+                            TileType::StairsUp => 5,
+                            TileType::StairsDown => 6,
+                        },
+                        flags: tile.flags,
+                        fg_color: tile.fg_color(),
+                        bg_color: tile.bg_color(),
+                    }
+                })
             })
             .collect();
 
+        // Only show entities in visible tiles
         let entities: Vec<EntityData> = self
             .entities
-            .entities_in_radius(cx, cy, view_radius)
-            .iter()
+            .all()
+            .filter(|e| visible.contains(&e.pos))
             .map(|e| EntityData {
                 id: e.id,
                 entity_type: e.entity_type.to_u8(),
@@ -310,7 +435,15 @@ impl SubWorld {
             })
             .collect();
 
-        // Build explored array
+        // Ground items in visible area
+        let items_ground: Vec<(Coord, protocol::ItemStack)> = self
+            .items
+            .all_ground_items()
+            .into_iter()
+            .filter(|(coord, _)| visible.contains(coord))
+            .collect();
+
+        // Build explored array for view area
         let mut explored: Vec<bool> = Vec::new();
         let mut explored_width: u32 = 0;
         for dy in -view_radius..=view_radius {
@@ -335,19 +468,28 @@ impl SubWorld {
             explored,
             explored_width,
             entities,
-            items_ground: Vec::new(),
-            message_log: self
-                .message_log
-                .iter()
-                .rev()
-                .take(20)
-                .cloned()
-                .collect(),
+            items_ground,
+            message_log: self.log.recent(20),
             hp: ps.hp,
             stamina: ps.stamina,
             hunger: ps.hunger,
             thirst: ps.thirst,
         }
+    }
+}
+
+fn ai_action_to_pos(pos: Coord, action: &ActionType) -> Option<Coord> {
+    match action {
+        ActionType::MoveUp => Some(Coord::new(pos.x, pos.y - 1)),
+        ActionType::MoveDown => Some(Coord::new(pos.x, pos.y + 1)),
+        ActionType::MoveLeft => Some(Coord::new(pos.x - 1, pos.y)),
+        ActionType::MoveRight => Some(Coord::new(pos.x + 1, pos.y)),
+        ActionType::MoveUpLeft => Some(Coord::new(pos.x - 1, pos.y - 1)),
+        ActionType::MoveUpRight => Some(Coord::new(pos.x + 1, pos.y - 1)),
+        ActionType::MoveDownLeft => Some(Coord::new(pos.x - 1, pos.y + 1)),
+        ActionType::MoveDownRight => Some(Coord::new(pos.x + 1, pos.y + 1)),
+        ActionType::Wait => Some(pos),
+        _ => None,
     }
 }
 
@@ -384,9 +526,8 @@ mod tests {
     async fn test_sub_world_creation() {
         let sw = SubWorld::new((0, 0), 12345);
         assert_eq!(sw.id, (0, 0));
-        assert!(!sw.map.is_passable(0, 0)); // border is wall
+        assert!(!sw.map.is_passable(0, 0));
 
-        // Verify some floor tiles exist
         let mut floor_count = 0;
         for y in 0..SUBWORLD_SIZE {
             for x in 0..SUBWORLD_SIZE {
@@ -396,8 +537,6 @@ mod tests {
             }
         }
         assert!(floor_count > 100, "expected >100 floor tiles, got {floor_count}");
-
-        // Verify enemies were spawned
         assert!(sw.entities.len() > 0, "expected some entities");
     }
 }
