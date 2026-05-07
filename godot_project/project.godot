@@ -1,0 +1,9 @@
+; Engine configuration
+config_version=5
+
+[application]
+config/name="CDDA Rust"
+config/features=PackedStringArray("4.4")
+
+[rendering]
+renderer/rendering_method="mobile"

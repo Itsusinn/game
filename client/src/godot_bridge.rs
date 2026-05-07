@@ -1,0 +1,294 @@
+use std::sync::mpsc;
+use tokio::sync::mpsc as tokio_mpsc;
+
+use godot::builtin::{Dictionary, Variant};
+use godot::prelude::*;
+
+use crate::input_queue::{InputQueue, PredictedState};
+use crate::prediction::{check_rollback, predict_move};
+use crate::state::GameState;
+use protocol::*;
+
+#[derive(GodotClass)]
+#[class(base=RefCounted)]
+pub struct CddaClient {
+    #[base]
+    base: Base<RefCounted>,
+
+    recv_rx: Option<mpsc::Receiver<ServerMessage>>,
+    send_tx: Option<tokio_mpsc::Sender<ClientMessage>>,
+
+    state: GameState,
+    input_queue: InputQueue,
+    connected: bool,
+}
+
+#[godot_api]
+impl CddaClient {
+    #[func]
+    fn connect_to_server(&mut self, addr: GString) {
+        let addr: std::net::SocketAddr = match addr.to_string().parse() {
+            Ok(a) => a,
+            Err(e) => {
+                godot_print!("Invalid address: {e}");
+                return;
+            }
+        };
+
+        let (send_tx, mut send_rx) = tokio_mpsc::channel::<ClientMessage>(64);
+        let (recv_tx, recv_rx) = mpsc::channel::<ServerMessage>();
+
+        self.send_tx = Some(send_tx);
+        self.recv_rx = Some(recv_rx);
+
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("Failed to create runtime: {e}");
+                    return;
+                }
+            };
+
+            rt.block_on(async {
+                let mut net = match crate::network_client::NetworkClient::connect(addr).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        let _ = recv_tx.send(ServerMessage::Error {
+                            code: 1,
+                            text: format!("Connection failed: {e}"),
+                        });
+                        return;
+                    }
+                };
+
+                let login = ClientMessage::Login {
+                    version: 1,
+                    player_name: "godot_player".to_string(),
+                };
+                if net.send_message(&login).await.is_err() {
+                    return;
+                }
+
+                loop {
+                    tokio::select! {
+                        result = net.recv_message() => {
+                            match result {
+                                Ok(msg) => {
+                                    if recv_tx.send(msg).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        cmd = send_rx.recv() => {
+                            match cmd {
+                                Some(msg) => {
+                                    if net.send_message(&msg).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            });
+        });
+
+        self.connected = true;
+    }
+
+    #[func]
+    fn tick(&mut self, _delta: f64) {
+        if !self.connected {
+            return;
+        }
+
+        while let Some(rx) = &self.recv_rx {
+            match rx.try_recv() {
+                Ok(msg) => self.handle_message(msg),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.connected = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    #[func]
+    fn send_move(&mut self, direction: i32) {
+        if !self.connected {
+            return;
+        }
+
+        let action = match direction {
+            0 => ActionType::MoveUp,
+            1 => ActionType::MoveDown,
+            2 => ActionType::MoveLeft,
+            3 => ActionType::MoveRight,
+            4 => ActionType::MoveUpLeft,
+            5 => ActionType::MoveUpRight,
+            6 => ActionType::MoveDownLeft,
+            7 => ActionType::MoveDownRight,
+            _ => return,
+        };
+
+        let predicted_pos = predict_move(self.state.player_pos, &action);
+        self.state.player_pos = predicted_pos;
+
+        let seq = self.input_queue.push(
+            action.clone(),
+            Some(PredictedState {
+                pos: predicted_pos,
+            }),
+        );
+
+        if let Some(tx) = &self.send_tx {
+            let _ = tx.blocking_send(ClientMessage::PlayerAction {
+                seq,
+                action,
+                target: None,
+            });
+        }
+    }
+
+    #[func]
+    fn send_wait(&mut self) {
+        if !self.connected {
+            return;
+        }
+        let seq = self.input_queue.push(ActionType::Wait, None);
+        if let Some(tx) = &self.send_tx {
+            let _ = tx.blocking_send(ClientMessage::PlayerAction {
+                seq,
+                action: ActionType::Wait,
+                target: None,
+            });
+        }
+    }
+
+    #[func]
+    fn get_player_pos(&self) -> Vector2i {
+        Vector2i {
+            x: self.state.player_pos.x,
+            y: self.state.player_pos.y,
+        }
+    }
+
+    #[func]
+    fn get_player_hp(&self) -> i32 { self.state.hp }
+    #[func]
+    fn get_player_max_hp(&self) -> i32 { self.state.max_hp }
+    #[func]
+    fn get_player_stamina(&self) -> i32 { self.state.stamina }
+    #[func]
+    fn get_player_hunger(&self) -> i32 { self.state.hunger }
+    #[func]
+    fn get_player_thirst(&self) -> i32 { self.state.thirst }
+
+    #[func]
+    fn get_entity_count(&self) -> i32 {
+        self.state.entities.len() as i32
+    }
+
+    #[func]
+    fn get_visible_tile_count(&self) -> i32 {
+        self.state.visible_tiles.len() as i32
+    }
+
+    #[func]
+    fn get_visible_tile(&self, index: i32) -> Dictionary<Variant, Variant> {
+        let mut dict = Dictionary::new();
+        if index >= 0 && (index as usize) < self.state.visible_tiles.len() {
+            let t = &self.state.visible_tiles[index as usize];
+            dict.set("pos_x", t.pos.x);
+            dict.set("pos_y", t.pos.y);
+            dict.set("tile_type", t.tile_type as i32);
+            dict.set("fg_color", t.fg_color as i32);
+            dict.set("bg_color", t.bg_color as i32);
+        }
+        dict
+    }
+
+    #[func]
+    fn get_entity(&self, index: i32) -> Dictionary<Variant, Variant> {
+        let mut dict = Dictionary::new();
+        if index >= 0 && (index as usize) < self.state.entities.len() {
+            let e = &self.state.entities[index as usize];
+            dict.set("id", e.id);
+            dict.set("pos_x", e.pos.x);
+            dict.set("pos_y", e.pos.y);
+            dict.set("name", e.name.as_str());
+            dict.set("entity_type", e.entity_type as i32);
+            dict.set("hp", e.hp);
+            dict.set("max_hp", e.max_hp);
+            dict.set("is_player", e.is_player);
+        }
+        dict
+    }
+
+    #[func]
+    fn get_log_count(&self) -> i32 {
+        self.state.message_log.len() as i32
+    }
+
+    #[func]
+    fn get_log_entry(&self, index: i32) -> Dictionary<Variant, Variant> {
+        let mut dict = Dictionary::new();
+        if index >= 0 && (index as usize) < self.state.message_log.len() {
+            let entry = &self.state.message_log[index as usize];
+            dict.set("text", entry.text.as_str());
+            dict.set("color", entry.color as i32);
+        }
+        dict
+    }
+
+    #[func]
+    fn disconnect(&mut self) {
+        if let Some(tx) = &self.send_tx {
+            let _ = tx.blocking_send(ClientMessage::Logout);
+        }
+        self.connected = false;
+    }
+
+    #[func]
+    fn is_connected(&self) -> bool {
+        self.connected
+    }
+}
+
+#[godot_api]
+impl IRefCounted for CddaClient {
+    fn init(base: Base<RefCounted>) -> Self {
+        Self {
+            base,
+            recv_rx: None,
+            send_tx: None,
+            state: GameState::default(),
+            input_queue: InputQueue::new(),
+            connected: false,
+        }
+    }
+}
+
+impl CddaClient {
+    fn handle_message(&mut self, msg: ServerMessage) {
+        match &msg {
+            ServerMessage::WorldState { seq, player_pos, .. } => {
+                let acked = self.input_queue.ack_up_to(*seq);
+                for pending in &acked {
+                    if let Some(ref predicted) = pending.predicted {
+                        let _ = check_rollback(predicted.pos, *player_pos);
+                    }
+                }
+                self.state.apply_snapshot_owned(msg);
+            }
+            _ => {
+                self.state.apply_delta(&msg);
+            }
+        }
+    }
+}

@@ -1,3 +1,4 @@
+pub mod godot_bridge;
 pub mod input_queue;
 pub mod network_client;
 pub mod prediction;
@@ -11,6 +12,13 @@ use network_client::NetworkClient;
 use prediction::{check_rollback, predict_move};
 use protocol::*;
 use state::GameState;
+
+use godot::prelude::*;
+
+struct CddaExtension;
+
+#[gdextension]
+unsafe impl ExtensionLibrary for CddaExtension {}
 
 pub struct GameClient {
     pub state: GameState,
@@ -83,16 +91,13 @@ impl GameClient {
 
     fn handle_server_message(&mut self, msg: ServerMessage) {
         match &msg {
-            ServerMessage::WorldState { seq, player_pos, .. } => {
-                // Acknowledge pending inputs up to this sequence number
+            ServerMessage::WorldState {
+                seq, player_pos, ..
+            } => {
                 let acked = self.input_queue.ack_up_to(*seq);
-
-                // Check predictions for mismatches
                 for pending in &acked {
                     if let Some(ref predicted) = pending.predicted {
-                        if let Some(corrected) =
-                            check_rollback(predicted.pos, *player_pos)
-                        {
+                        if let Some(corrected) = check_rollback(predicted.pos, *player_pos) {
                             println!(
                                 "Rollback! seq={}: predicted ({},{}), server says ({},{})",
                                 pending.seq,
@@ -117,10 +122,8 @@ impl GameClient {
     pub async fn send_move(&mut self, action: ActionType) -> Result<Coord> {
         let predicted_pos = predict_move(self.state.player_pos, &action);
 
-        // Apply prediction locally for immediate rendering
         self.state.player_pos = predicted_pos;
 
-        // Queue the action
         let seq = self.input_queue.push(
             action.clone(),
             Some(input_queue::PredictedState {
@@ -128,7 +131,6 @@ impl GameClient {
             }),
         );
 
-        // Send to server
         self.network
             .send_message(&ClientMessage::PlayerAction {
                 seq,
@@ -153,9 +155,7 @@ impl GameClient {
     }
 
     pub async fn disconnect(&mut self) -> Result<()> {
-        self.network
-            .send_message(&ClientMessage::Logout)
-            .await?;
+        self.network.send_message(&ClientMessage::Logout).await?;
         self.network.close();
         Ok(())
     }
