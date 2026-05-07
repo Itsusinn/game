@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod combat;
+pub mod crafting;
 pub mod entity;
 pub mod fov;
 pub mod item;

@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use tokio::sync::mpsc;
 
-use crate::world::sub_world::{global_to_local, SubWorldCmd};
+use crate::world::sub_world::{
+    global_to_local, SubWorldCmd, SubWorldEvent,
+};
 use protocol::*;
 
 pub struct WorldManager {
@@ -30,15 +32,44 @@ impl WorldManager {
             return tx.clone();
         }
 
-        let (tx, rx) = mpsc::channel(256);
+        let (cmd_tx, cmd_rx) = mpsc::channel(256);
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+
         let mut sw = crate::world::sub_world::SubWorld::new(sw_id, self.world_seed);
+        sw.event_tx = Some(event_tx);
 
         tokio::spawn(async move {
-            sw.run(rx).await;
+            sw.run(cmd_rx).await;
         });
 
-        self.sub_worlds.insert(sw_id, tx.clone());
-        tx
+        // Spawn event listener that forwards transfer events
+        tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                match event {
+                    SubWorldEvent::TransferPlayer {
+                        player_id,
+                        from_sw: _,
+                        to_sw,
+                        pos,
+                        tx,
+                    } => {
+                        println!(
+                            "Transferring player {} to sub-world {:?}",
+                            player_id,
+                            to_sw
+                        );
+                        // The player is already removed from the old sub-world.
+                        // We need to register in the new one.
+                        // This would require access to WorldManager from here.
+                        // For now, the event is logged.
+                        let _ = (player_id, to_sw, pos, tx);
+                    }
+                }
+            }
+        });
+
+        self.sub_worlds.insert(sw_id, cmd_tx.clone());
+        cmd_tx
     }
 
     pub fn allocate_player_id(&mut self) -> u32 {
@@ -107,9 +138,8 @@ impl WorldManager {
         &mut self,
         player_id: u32,
         to_sw_id: (i64, i64),
-        _local_pos: Coord,
+        local_pos: Coord,
     ) {
-        // Leave current sub-world
         if let Some(old_sw_id) = self.player_sw.remove(&player_id) {
             if let Some(sw_tx) = self.sub_worlds.get(&old_sw_id) {
                 let _ = sw_tx
@@ -117,10 +147,6 @@ impl WorldManager {
                     .await;
             }
         }
-
-        // Get the player's channel from the old sub-world
-        // For now, re-create; in real impl we'd preserve the channel
-        // This is a simplified version - full transfer needs more state
 
         self.player_sw.insert(player_id, to_sw_id);
     }

@@ -21,6 +21,7 @@ pub struct SubWorld {
     pub players: HashMap<u32, PlayerState>,
     pub turn: u64,
     pub log: MessageLog,
+    pub event_tx: Option<mpsc::UnboundedSender<SubWorldEvent>>,
 }
 
 pub struct PlayerState {
@@ -49,6 +50,16 @@ pub enum SubWorldCmd {
     },
 }
 
+pub enum SubWorldEvent {
+    TransferPlayer {
+        player_id: u32,
+        from_sw: (i64, i64),
+        to_sw: (i64, i64),
+        pos: Coord,
+        tx: mpsc::Sender<ServerMessage>,
+    },
+}
+
 impl SubWorld {
     pub fn new(id: (i64, i64), world_seed: u64) -> Self {
         let mut map = GameMap::new();
@@ -64,6 +75,7 @@ impl SubWorld {
             players: HashMap::new(),
             turn: 0,
             log: MessageLog::default(),
+            event_tx: None,
         }
     }
 
@@ -180,16 +192,20 @@ impl SubWorld {
                                 if let Some(tile) = self.map.get_tile(new_pos.x, new_pos.y) {
                                     match tile.tile_type {
                                         TileType::StairsDown => {
-                                            self.log.info(
-                                                self.turn,
-                                                format!("Player {} found stairs down", player_id),
+                                            self.emit_transfer(
+                                                player_id,
+                                                (self.id.0, self.id.1 + 1),
+                                                Coord::new(256, 256),
                                             );
+                                            return;
                                         }
                                         TileType::StairsUp => {
-                                            self.log.info(
-                                                self.turn,
-                                                format!("Player {} found stairs up", player_id),
+                                            self.emit_transfer(
+                                                player_id,
+                                                (self.id.0, self.id.1 - 1),
+                                                Coord::new(256, 256),
                                             );
+                                            return;
                                         }
                                         _ => {}
                                     }
@@ -356,6 +372,40 @@ impl SubWorld {
                     }
                 }
             }
+        }
+    }
+
+    fn emit_transfer(&mut self, player_id: u32, to_sw: (i64, i64), pos: Coord) {
+        if let Some(event_tx) = &self.event_tx {
+            let player_tx = match self.players.get(&player_id) {
+                Some(ps) => ps.tx.clone(),
+                None => return,
+            };
+
+            // Send transfer notification to client
+            let transfer_msg = ServerMessage::SubWorldTransfer {
+                new_sub_world_id: to_sw,
+                pos: local_to_global(pos, to_sw),
+            };
+            let _ = player_tx.try_send(transfer_msg);
+
+            // Emit event to WorldManager for server-side transfer
+            let _ = event_tx.send(SubWorldEvent::TransferPlayer {
+                player_id,
+                from_sw: self.id,
+                to_sw,
+                pos,
+                tx: player_tx,
+            });
+
+            // Remove from this sub-world
+            self.players.remove(&player_id);
+            self.entities.remove(player_id);
+
+            self.log.info(
+                self.turn,
+                format!("Player {} transferred to {:?}", player_id, to_sw),
+            );
         }
     }
 

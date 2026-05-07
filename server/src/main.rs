@@ -1,4 +1,5 @@
 mod network;
+mod storage;
 mod world;
 
 #[tokio::main]

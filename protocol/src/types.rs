@@ -24,7 +24,7 @@ impl Coord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TileFlags(u8);
+pub struct TileFlags(pub u8);
 
 impl TileFlags {
     pub const BLOCKS_MOVEMENT: u8 = 1 << 0;
