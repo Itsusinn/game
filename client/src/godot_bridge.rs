@@ -10,10 +10,10 @@ use crate::state::GameState;
 use protocol::*;
 
 #[derive(GodotClass)]
-#[class(base=RefCounted)]
+#[class(base=Node)]
 pub struct CddaClient {
     #[base]
-    base: Base<RefCounted>,
+    base: Base<Node>,
 
     recv_rx: Option<mpsc::Receiver<ServerMessage>>,
     send_tx: Option<tokio_mpsc::Sender<ClientMessage>>,
@@ -26,7 +26,7 @@ pub struct CddaClient {
 #[godot_api]
 impl CddaClient {
     #[func]
-    fn connect_to_server(&mut self, addr: GString) {
+    fn connect_to_game_server(&mut self, addr: GString) {
         let addr: std::net::SocketAddr = match addr.to_string().parse() {
             Ok(a) => a,
             Err(e) => {
@@ -247,7 +247,7 @@ impl CddaClient {
     }
 
     #[func]
-    fn disconnect(&mut self) {
+    fn disconnect_from_server(&mut self) {
         if let Some(tx) = &self.send_tx {
             let _ = tx.blocking_send(ClientMessage::Logout);
         }
@@ -255,14 +255,14 @@ impl CddaClient {
     }
 
     #[func]
-    fn is_connected(&self) -> bool {
+    fn is_game_connected(&self) -> bool {
         self.connected
     }
 }
 
 #[godot_api]
-impl IRefCounted for CddaClient {
-    fn init(base: Base<RefCounted>) -> Self {
+impl INode for CddaClient {
+    fn init(base: Base<Node>) -> Self {
         Self {
             base,
             recv_rx: None,

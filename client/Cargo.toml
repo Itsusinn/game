@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["lib", "cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 protocol = { path = "../protocol" }
@@ -14,4 +14,4 @@ rmp-serde = "1"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
-godot = { version = "0.5", default-features = false, features = ["custom-godot"] }
+godot = { git = "https://github.com/godot-rust/gdext.git", features = ["register-docs"] }

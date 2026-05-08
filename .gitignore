@@ -3,3 +3,6 @@
 **/*.dylib
 *.log
 .env
+*.uid
+.godot/
+gdextension_interface.h
