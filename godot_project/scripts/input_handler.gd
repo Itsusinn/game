@@ -12,4 +12,4 @@ func _input(event):
 			KEY_A, KEY_LEFT:  c.send_move(2)
 			KEY_D, KEY_RIGHT: c.send_move(3)
 			KEY_PERIOD:       c.send_wait()
-			KEY_ESCAPE:       c.disconnect()
+			KEY_ESCAPE:       c.disconnect_from_server()

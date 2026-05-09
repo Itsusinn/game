@@ -45,7 +45,11 @@ func _process(delta):
 
 	if camera:
 		var pos = client.get_player_pos()
-		camera.position = Vector2(pos.x * 16, pos.y * 16)
+		const TILE_SIZE := 16
+		camera.position = Vector2(
+			pos.x * TILE_SIZE + TILE_SIZE * 0.5,
+			pos.y * TILE_SIZE + TILE_SIZE * 0.5,
+		)
 
 	if hud and hud.has_method("update"):
 		hud.call("update", client)
