@@ -38,43 +38,57 @@ pub fn make_server_endpoint(addr: std::net::SocketAddr) -> Result<Endpoint> {
     Ok(endpoint)
 }
 
-#[instrument(level = "info")]
-pub async fn run_server(addr: std::net::SocketAddr, world_seed: u64) -> Result<()> {
+/// Run the QUIC accept loop until either the endpoint closes or `shutdown` resolves.
+#[instrument(level = "info", skip(wm, shutdown))]
+pub async fn run_server(
+    addr: std::net::SocketAddr,
+    wm: Arc<Mutex<WorldManager>>,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<()> {
     let endpoint = make_server_endpoint(addr)?;
-    let wm = Arc::new(Mutex::new(WorldManager::new(world_seed)));
-
     info!("Server listening");
 
+    tokio::pin!(shutdown);
+
     loop {
-        match endpoint.accept().await {
-            Some(incoming) => {
-                let wm = wm.clone();
-                let peer = incoming.remote_address();
-                tokio::spawn(
-                    async move {
-                        match incoming.await {
-                            Ok(connection) => {
-                                let addr = connection.remote_address();
-                                info!(%addr, "New QUIC connection");
-                                if let Err(e) = handle_connection(connection, wm).await {
-                                    error!(%addr, error = %e, "Connection error");
+        tokio::select! {
+            _ = &mut shutdown => {
+                info!("Shutdown signal received, stopping accept loop");
+                break;
+            }
+            incoming = endpoint.accept() => {
+                match incoming {
+                    Some(incoming) => {
+                        let wm = wm.clone();
+                        let peer = incoming.remote_address();
+                        tokio::spawn(
+                            async move {
+                                match incoming.await {
+                                    Ok(connection) => {
+                                        let addr = connection.remote_address();
+                                        info!(%addr, "New QUIC connection");
+                                        if let Err(e) = handle_connection(connection, wm).await {
+                                            error!(%addr, error = %e, "Connection error");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!(%peer, error = %e, "Incoming connection accept failed");
+                                    }
                                 }
                             }
-                            Err(e) => {
-                                error!(%peer, error = %e, "Incoming connection accept failed");
-                            }
-                        }
+                            .instrument(span!(Level::INFO, "accept_conn", %peer)),
+                        );
                     }
-                    .instrument(span!(Level::INFO, "accept_conn", %peer)),
-                );
-            }
-            None => {
-                warn!("Endpoint closed, stopping server");
-                break;
+                    None => {
+                        warn!("Endpoint closed, stopping server");
+                        break;
+                    }
+                }
             }
         }
     }
 
+    endpoint.close(0u32.into(), b"shutdown");
     Ok(())
 }
 

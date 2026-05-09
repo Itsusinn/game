@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::world::map::GameMap;
-use crate::world::tile::{Tile, TileType};
+use crate::world::tile::TileType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedMap {
@@ -17,6 +18,12 @@ pub struct SavedMap {
 pub struct SavedTile {
     pub tile_type: u8,
     pub flags: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedWorld {
+    pub world_seed: u64,
+    pub sub_worlds: HashMap<(i64, i64), SavedMap>,
 }
 
 impl From<&GameMap> for SavedMap {
@@ -49,43 +56,21 @@ impl From<&GameMap> for SavedMap {
     }
 }
 
-pub fn save_world(map: &GameMap, filepath: &Path) -> Result<()> {
-    let saved = SavedMap::from(map);
-    let data = rmp_serde::to_vec(&saved).context("serialize map")?;
-    std::fs::write(filepath, &data).context("write save file")?;
+pub fn save_world_to(saved: &SavedWorld, filepath: &Path) -> Result<()> {
+    if let Some(parent) = filepath.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).context("create save directory")?;
+        }
+    }
+    let data = rmp_serde::to_vec(saved).context("serialize world")?;
+    std::fs::write(filepath, &data).context("write world save file")?;
     Ok(())
 }
 
-pub fn load_world(filepath: &Path) -> Result<GameMap> {
-    let data = std::fs::read(filepath).context("read save file")?;
-    let saved: SavedMap = rmp_serde::from_slice(&data).context("deserialize map")?;
-
-    let mut map = GameMap::new();
-    for (i, saved_tile) in saved.tiles.iter().enumerate() {
-        let x = (i % saved.width as usize) as i32;
-        let y = (i / saved.width as usize) as i32;
-
-        let tile_type = match saved_tile.tile_type {
-            0 => TileType::Floor,
-            1 => TileType::Wall,
-            2 => TileType::Door { open: true },
-            3 => TileType::Door { open: false },
-            4 => TileType::Water,
-            5 => TileType::StairsUp,
-            6 => TileType::StairsDown,
-            _ => TileType::Floor,
-        };
-
-        map.set_tile(x, y, Tile::new(tile_type));
-    }
-
-    for (i, &explored) in saved.explored.iter().enumerate() {
-        let x = (i % saved.width as usize) as i32;
-        let y = (i / saved.width as usize) as i32;
-        map.set_explored(x, y, explored);
-    }
-
-    Ok(map)
+pub fn load_world_from(filepath: &Path) -> Result<SavedWorld> {
+    let data = std::fs::read(filepath).context("read world save file")?;
+    let saved: SavedWorld = rmp_serde::from_slice(&data).context("deserialize world")?;
+    Ok(saved)
 }
 
 #[cfg(test)]
@@ -94,24 +79,44 @@ mod tests {
     use crate::world::tile::Tile;
 
     #[test]
-    fn test_save_load_roundtrip() {
+    fn saved_map_codec_preserves_tiles_and_explored() {
         let mut map = GameMap::new();
         map.set_tile(10, 10, Tile::new(TileType::Floor));
         map.set_tile(11, 10, Tile::new(TileType::Wall));
         map.set_tile(12, 10, Tile::new(TileType::Door { open: false }));
         map.set_explored(10, 10, true);
 
-        let path = std::path::Path::new("/tmp/test_save.bin");
-        save_world(&map, path).unwrap();
+        let saved = SavedMap::from(&map);
+        let bytes = rmp_serde::to_vec(&saved).expect("serialize");
+        let back: SavedMap = rmp_serde::from_slice(&bytes).expect("deserialize");
 
-        let loaded = load_world(path).unwrap();
+        assert_eq!(back.width, map.width());
+        assert_eq!(back.height, map.height());
+        assert_eq!(back.tiles.len(), saved.tiles.len());
+        assert_eq!(back.explored, saved.explored);
+        // Tile (11, 10) should have been encoded as Wall (1).
+        let idx = (10 * map.width() + 11) as usize;
+        assert_eq!(back.tiles[idx].tile_type, 1);
+    }
 
-        assert!(loaded.is_passable(10, 10));
-        assert!(!loaded.is_passable(11, 10));
-        let door = loaded.get_tile(12, 10).unwrap();
-        assert!(matches!(door.tile_type, TileType::Door { open: false }));
-        assert!(loaded.explored[loaded.index(10, 10)]);
+    #[test]
+    fn test_save_load_world_roundtrip() -> Result<()> {
+        let mut sub_worlds = HashMap::new();
+        let mut map = GameMap::new();
+        map.set_tile(0, 0, Tile::new(TileType::Floor));
+        sub_worlds.insert((0, 0), SavedMap::from(&map));
 
-        std::fs::remove_file(path).ok();
+        let saved = SavedWorld {
+            world_seed: 0xDEAD_BEEF,
+            sub_worlds,
+        };
+
+        let tmp = tempfile::NamedTempFile::new()?;
+        save_world_to(&saved, tmp.path())?;
+        let loaded = load_world_from(tmp.path())?;
+
+        assert_eq!(loaded.world_seed, 0xDEAD_BEEF);
+        assert!(loaded.sub_worlds.contains_key(&(0, 0)));
+        Ok(())
     }
 }

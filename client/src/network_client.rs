@@ -1,10 +1,15 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use quinn::{Connection, Endpoint, RecvStream, SendStream, ClientConfig};
 use rustls::pki_types::ServerName;
 use std::sync::Arc;
 use std::net::SocketAddr;
+use std::time::Duration;
+use tokio::time::timeout;
 
 use protocol::{ClientMessage, ServerMessage};
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const RECV_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct NetworkClient {
     endpoint: Endpoint,
@@ -30,13 +35,19 @@ impl NetworkClient {
             .context("create client endpoint")?;
         endpoint.set_default_client_config(ClientConfig::new(Arc::new(quic_config)));
 
-        let connection = endpoint
+        let connecting = endpoint
             .connect(server_addr, "localhost")
-            .context("connect to server")?
+            .context("connect to server")?;
+
+        let connection = timeout(CONNECT_TIMEOUT, connecting)
             .await
+            .map_err(|_| anyhow!("connect timed out after {:?}", CONNECT_TIMEOUT))?
             .context("await connection")?;
 
-        let (send, recv) = connection.open_bi().await.context("open bi stream")?;
+        let (send, recv) = timeout(CONNECT_TIMEOUT, connection.open_bi())
+            .await
+            .map_err(|_| anyhow!("open_bi timed out after {:?}", CONNECT_TIMEOUT))?
+            .context("open bi stream")?;
 
         Ok(Self {
             endpoint,
@@ -56,13 +67,17 @@ impl NetworkClient {
 
     pub async fn recv_message(&mut self) -> Result<ServerMessage> {
         let mut len_buf = [0u8; 4];
-        self.recv.read_exact(&mut len_buf).await?;
+        timeout(RECV_TIMEOUT, self.recv.read_exact(&mut len_buf))
+            .await
+            .map_err(|_| anyhow!("recv length-prefix timed out after {:?}", RECV_TIMEOUT))??;
         let msg_len = u32::from_be_bytes(len_buf) as usize;
         if msg_len > 1_048_576 {
             anyhow::bail!("frame too large: {msg_len}");
         }
         let mut buf = vec![0u8; msg_len];
-        self.recv.read_exact(&mut buf).await?;
+        timeout(RECV_TIMEOUT, self.recv.read_exact(&mut buf))
+            .await
+            .map_err(|_| anyhow!("recv body timed out after {:?}", RECV_TIMEOUT))??;
         let msg: ServerMessage = rmp_serde::from_slice(&buf)?;
         Ok(msg)
     }

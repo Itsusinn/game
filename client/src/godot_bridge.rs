@@ -1,5 +1,6 @@
 use std::sync::mpsc;
 use tokio::sync::mpsc as tokio_mpsc;
+use tokio::sync::oneshot;
 
 use godot::builtin::{Dictionary, Variant};
 use godot::prelude::*;
@@ -17,6 +18,7 @@ pub struct CddaClient {
 
     recv_rx: Option<mpsc::Receiver<ServerMessage>>,
     send_tx: Option<tokio_mpsc::Sender<ClientMessage>>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
 
     state: GameState,
     input_queue: InputQueue,
@@ -37,15 +39,21 @@ impl CddaClient {
 
         let (send_tx, mut send_rx) = tokio_mpsc::channel::<ClientMessage>(64);
         let (recv_tx, recv_rx) = mpsc::channel::<ServerMessage>();
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
         self.send_tx = Some(send_tx);
         self.recv_rx = Some(recv_rx);
+        self.shutdown_tx = Some(shutdown_tx);
 
         std::thread::spawn(move || {
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
                 Err(e) => {
-                    eprintln!("Failed to create runtime: {e}");
+                    eprintln!("network: failed to create runtime: {e}");
+                    let _ = recv_tx.send(ServerMessage::Error {
+                        code: 2,
+                        text: format!("runtime init failed: {e}"),
+                    });
                     return;
                 }
             };
@@ -54,6 +62,7 @@ impl CddaClient {
                 let mut net = match crate::network_client::NetworkClient::connect(addr).await {
                     Ok(n) => n,
                     Err(e) => {
+                        eprintln!("network: connect failed: {e}");
                         let _ = recv_tx.send(ServerMessage::Error {
                             code: 1,
                             text: format!("Connection failed: {e}"),
@@ -66,7 +75,12 @@ impl CddaClient {
                     version: 1,
                     player_name: "godot_player".to_string(),
                 };
-                if net.send_message(&login).await.is_err() {
+                if let Err(e) = net.send_message(&login).await {
+                    eprintln!("network: login send failed: {e}");
+                    let _ = recv_tx.send(ServerMessage::Error {
+                        code: 2,
+                        text: format!("login send failed: {e}"),
+                    });
                     return;
                 }
 
@@ -75,22 +89,43 @@ impl CddaClient {
                         result = net.recv_message() => {
                             match result {
                                 Ok(msg) => {
-                                    if recv_tx.send(msg).is_err() {
+                                    if let Err(e) = recv_tx.send(msg) {
+                                        eprintln!("network: recv channel closed: {e}");
                                         break;
                                     }
                                 }
-                                Err(_) => break,
+                                Err(e) => {
+                                    eprintln!("network: recv failed: {e}");
+                                    let _ = recv_tx.send(ServerMessage::Error {
+                                        code: 2,
+                                        text: format!("disconnect: {e}"),
+                                    });
+                                    break;
+                                }
                             }
                         }
                         cmd = send_rx.recv() => {
                             match cmd {
                                 Some(msg) => {
-                                    if net.send_message(&msg).await.is_err() {
+                                    if let Err(e) = net.send_message(&msg).await {
+                                        eprintln!("network: send failed: {e}");
+                                        let _ = recv_tx.send(ServerMessage::Error {
+                                            code: 2,
+                                            text: format!("send failed: {e}"),
+                                        });
                                         break;
                                     }
                                 }
-                                None => break,
+                                None => {
+                                    eprintln!("network: send channel closed");
+                                    break;
+                                }
                             }
+                        }
+                        _ = &mut shutdown_rx => {
+                            let _ = net.send_message(&ClientMessage::Logout).await;
+                            net.close();
+                            break;
                         }
                     }
                 }
@@ -147,11 +182,13 @@ impl CddaClient {
         );
 
         if let Some(tx) = &self.send_tx {
-            let _ = tx.blocking_send(ClientMessage::PlayerAction {
+            if let Err(e) = tx.blocking_send(ClientMessage::PlayerAction {
                 seq,
                 action,
                 target: None,
-            });
+            }) {
+                godot_error!("dropped move action (channel closed): {}", e);
+            }
         }
     }
 
@@ -162,11 +199,13 @@ impl CddaClient {
         }
         let seq = self.input_queue.push(ActionType::Wait, None);
         if let Some(tx) = &self.send_tx {
-            let _ = tx.blocking_send(ClientMessage::PlayerAction {
+            if let Err(e) = tx.blocking_send(ClientMessage::PlayerAction {
                 seq,
                 action: ActionType::Wait,
                 target: None,
-            });
+            }) {
+                godot_error!("dropped wait action (channel closed): {}", e);
+            }
         }
     }
 
@@ -248,9 +287,10 @@ impl CddaClient {
 
     #[func]
     fn disconnect_from_server(&mut self) {
-        if let Some(tx) = &self.send_tx {
-            let _ = tx.blocking_send(ClientMessage::Logout);
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
         }
+        self.send_tx = None;
         self.connected = false;
     }
 
@@ -267,6 +307,7 @@ impl INode for CddaClient {
             base,
             recv_rx: None,
             send_tx: None,
+            shutdown_tx: None,
             state: GameState::default(),
             input_queue: InputQueue::new(),
             connected: false,

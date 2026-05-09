@@ -49,7 +49,7 @@ impl TileFlags {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TileData {
     pub pos: Coord,
     pub tile_type: u8,
@@ -58,7 +58,7 @@ pub struct TileData {
     pub bg_color: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntityData {
     pub id: u32,
     pub entity_type: u8,
@@ -69,13 +69,13 @@ pub struct EntityData {
     pub is_player: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ItemStack {
     pub item_id: u32,
     pub quantity: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
     pub text: String,
     pub color: u32,

@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, instrument, warn};
 
+use crate::storage::save::SavedMap;
 use crate::world::ai;
 use crate::world::combat;
 use crate::world::entity::{EntityManager, EntityType};
@@ -48,6 +49,9 @@ pub enum SubWorldCmd {
         player_id: u32,
         action: ActionType,
         target: Option<Coord>,
+    },
+    Snapshot {
+        reply: oneshot::Sender<SavedMap>,
     },
 }
 
@@ -218,6 +222,10 @@ impl SubWorld {
                         }
                     }
                 }
+            }
+            SubWorldCmd::Snapshot { reply } => {
+                let saved = SavedMap::from(&self.map);
+                let _ = reply.send(saved);
             }
         }
     }
