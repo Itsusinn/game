@@ -4,11 +4,14 @@ use rcgen::generate_simple_self_signed;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use tracing::{debug, error, info, instrument, span, warn, Level};
+use tracing_futures::Instrument;
 
 use protocol::{ClientMessage, Coord, ServerMessage};
 
 use crate::world::world_manager::WorldManager;
 
+#[instrument(level = "info")]
 pub fn make_server_endpoint(addr: std::net::SocketAddr) -> Result<Endpoint> {
     let certified_key = generate_simple_self_signed(vec!["localhost".to_string()])
         .context("generate self-signed cert")?;
@@ -31,36 +34,42 @@ pub fn make_server_endpoint(addr: std::net::SocketAddr) -> Result<Endpoint> {
     let endpoint = Endpoint::server(server_config, addr)
         .context("create quinn endpoint")?;
 
+    info!("TLS endpoint created with self-signed cert");
     Ok(endpoint)
 }
 
+#[instrument(level = "info")]
 pub async fn run_server(addr: std::net::SocketAddr, world_seed: u64) -> Result<()> {
     let endpoint = make_server_endpoint(addr)?;
     let wm = Arc::new(Mutex::new(WorldManager::new(world_seed)));
 
-    println!("Server listening on udp://{} (seed: {})", addr, world_seed);
+    info!("Server listening");
 
     loop {
         match endpoint.accept().await {
             Some(incoming) => {
                 let wm = wm.clone();
-                tokio::spawn(async move {
-                    match incoming.await {
-                        Ok(connection) => {
-                            let addr = connection.remote_address();
-                            println!("new connection: {:?}", addr);
-                            if let Err(e) = handle_connection(connection, wm).await {
-                                eprintln!("connection {:?} error: {}", addr, e);
+                let peer = incoming.remote_address();
+                tokio::spawn(
+                    async move {
+                        match incoming.await {
+                            Ok(connection) => {
+                                let addr = connection.remote_address();
+                                info!(%addr, "New QUIC connection");
+                                if let Err(e) = handle_connection(connection, wm).await {
+                                    error!(%addr, error = %e, "Connection error");
+                                }
+                            }
+                            Err(e) => {
+                                error!(%peer, error = %e, "Incoming connection accept failed");
                             }
                         }
-                        Err(e) => {
-                            eprintln!("incoming accept error: {e}");
-                        }
                     }
-                });
+                    .instrument(span!(Level::INFO, "accept_conn", %peer)),
+                );
             }
             None => {
-                println!("endpoint closed");
+                warn!("Endpoint closed, stopping server");
                 break;
             }
         }
@@ -69,6 +78,7 @@ pub async fn run_server(addr: std::net::SocketAddr, world_seed: u64) -> Result<(
     Ok(())
 }
 
+#[instrument(level = "debug", skip(connection, wm), fields(addr = %connection.remote_address()))]
 async fn handle_connection(
     connection: Connection,
     wm: Arc<Mutex<WorldManager>>,
@@ -91,7 +101,7 @@ async fn handle_connection(
             let (player_tx, player_rx) = mpsc::channel::<ServerMessage>(64);
             let spawn_pos = Coord::new(256, 256);
             wm.register_player(pid, spawn_pos, player_tx).await;
-            println!("player {} ({}) logged in", pid, player_name);
+            info!(player_id = pid, %player_name, ?spawn_pos, "Player logged in");
             (pid, player_name, player_rx)
         }
         _ => anyhow::bail!("expected login message"),
@@ -100,25 +110,29 @@ async fn handle_connection(
     // Spawn forwarder: SubWorld → client
     let send_arc = Arc::new(Mutex::new(send));
     let send_clone = send_arc.clone();
-    tokio::spawn(async move {
-        let mut rx = player_rx;
-        while let Some(msg) = rx.recv().await {
-            let data = match rmp_serde::to_vec(&msg) {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("serialize server message: {e}");
+    let forwarder_span = span!(Level::DEBUG, "msg_forwarder", player_id = pid);
+    tokio::spawn(
+        async move {
+            let mut rx = player_rx;
+            while let Some(msg) = rx.recv().await {
+                let data = match rmp_serde::to_vec(&msg) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        error!(error = %e, "Serialize server message");
+                        break;
+                    }
+                };
+                let mut s = send_clone.lock().await;
+                if write_frame(&mut *s, &data).await.is_err() {
                     break;
                 }
-            };
-            let mut s = send_clone.lock().await;
-            if write_frame(&mut *s, &data).await.is_err() {
-                break;
             }
+            debug!("Message forwarder stopped");
         }
-    });
+        .instrument(forwarder_span),
+    );
 
     let player_id = pid;
-    let player_name = player_name;
 
     // Main loop: handle client messages
     loop {
@@ -130,7 +144,7 @@ async fn handle_connection(
         let msg: ClientMessage = match rmp_serde::from_slice(&frame) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("deserialize client message: {e}");
+                warn!(error = %e, "Deserialize client message failed");
                 continue;
             }
         };
@@ -139,6 +153,7 @@ async fn handle_connection(
             ClientMessage::PlayerAction {
                 action, target, ..
             } => {
+                debug!(?action, target = ?target, "Player action received");
                 let mut wm = wm.lock().await;
                 wm.handle_player_action(player_id, action, target).await;
             }
@@ -148,20 +163,25 @@ async fn handle_connection(
                 let mut send = send_arc.lock().await;
                 write_frame(&mut *send, &data).await?;
             }
-            ClientMessage::Logout => break,
-            _ => {}
+            ClientMessage::Logout => {
+                info!("Player logged out");
+                break;
+            }
+            _ => {
+                debug!("Unknown message type from client");
+            }
         }
     }
 
     // Cleanup
     let mut wm = wm.lock().await;
     wm.unregister_player(player_id).await;
-    println!("player {} ({}) disconnected", player_id, player_name);
-
+    info!(player_id, "Player disconnected");
     connection.close(0u32.into(), b"bye");
     Ok(())
 }
 
+#[instrument(level = "trace")]
 async fn read_frame(recv: &mut RecvStream) -> Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     recv.read_exact(&mut len_buf).await
@@ -178,6 +198,7 @@ async fn read_frame(recv: &mut RecvStream) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+#[instrument(level = "trace", skip(data))]
 async fn write_frame(send: &mut SendStream, data: &[u8]) -> Result<()> {
     let len = data.len() as u32;
     send.write_all(&len.to_be_bytes()).await

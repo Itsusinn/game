@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use tokio::sync::mpsc;
+use tracing::{info, instrument};
 
 use crate::world::sub_world::{
     global_to_local, SubWorldCmd, SubWorldEvent,
@@ -15,6 +16,7 @@ pub struct WorldManager {
 }
 
 impl WorldManager {
+    #[instrument(level = "info")]
     pub fn new(world_seed: u64) -> Self {
         Self {
             sub_worlds: HashMap::new(),
@@ -24,6 +26,7 @@ impl WorldManager {
         }
     }
 
+    #[instrument(level = "info", skip(self))]
     pub async fn get_or_create_sub_world(
         &mut self,
         sw_id: (i64, i64),
@@ -53,10 +56,11 @@ impl WorldManager {
                         pos,
                         tx,
                     } => {
-                        println!(
-                            "Transferring player {} to sub-world {:?}",
+                        info!(
                             player_id,
-                            to_sw
+                            to_sw = ?to_sw,
+                            pos = ?pos,
+                            "Transferring player to sub-world"
                         );
                         // The player is already removed from the old sub-world.
                         // We need to register in the new one.
@@ -78,6 +82,7 @@ impl WorldManager {
         id
     }
 
+    #[instrument(level = "info", skip(self, tx))]
     pub async fn register_player(
         &mut self,
         player_id: u32,
@@ -97,6 +102,7 @@ impl WorldManager {
             .await;
     }
 
+    #[instrument(level = "debug", skip(self))]
     pub async fn unregister_player(&mut self, player_id: u32) {
         if let Some(sw_id) = self.player_sw.remove(&player_id) {
             if let Some(sw_tx) = self.sub_worlds.get(&sw_id) {
@@ -107,6 +113,7 @@ impl WorldManager {
         }
     }
 
+    #[instrument(level = "debug", skip(self))]
     pub async fn handle_player_action(
         &mut self,
         player_id: u32,
@@ -134,6 +141,7 @@ impl WorldManager {
         }
     }
 
+    #[instrument(level = "debug", skip(self))]
     pub async fn transfer_player(
         &mut self,
         player_id: u32,

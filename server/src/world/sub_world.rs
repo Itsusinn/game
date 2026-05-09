@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use tokio::sync::mpsc;
+use tracing::{debug, info, instrument, warn};
 
 use crate::world::ai;
 use crate::world::combat;
@@ -61,12 +62,15 @@ pub enum SubWorldEvent {
 }
 
 impl SubWorld {
+    #[instrument(level = "info", fields(sw_id = ?id))]
     pub fn new(id: (i64, i64), world_seed: u64) -> Self {
+        info!("Generating new sub-world");
         let mut map = GameMap::new();
         let mut entities = EntityManager::new();
         let mut items = ItemManager::new();
         worldgen::generate_sub_world(&mut map, &mut entities, &mut items, world_seed, id);
 
+        info!(rooms = ?entities.all().count(), "Sub-world generated");
         Self {
             id,
             map,
@@ -79,6 +83,7 @@ impl SubWorld {
         }
     }
 
+    #[instrument(level = "info", skip(self, rx))]
     pub async fn run(&mut self, mut rx: mpsc::Receiver<SubWorldCmd>) {
         let mut ai_interval = tokio::time::interval(std::time::Duration::from_millis(200));
 
@@ -104,10 +109,7 @@ impl SubWorld {
     async fn handle_cmd(&mut self, cmd: SubWorldCmd) {
         match cmd {
             SubWorldCmd::PlayerJoin { player_id, pos, tx } => {
-                self.log.info(
-                    self.turn,
-                    format!("Player {} joined sub-world {:?}", player_id, self.id),
-                );
+                info!(?player_id, ?pos, sw = ?self.id, "Player joined sub-world");
 
                 self.entities.spawn(
                     format!("Player_{}", player_id),
@@ -136,6 +138,7 @@ impl SubWorld {
             }
 
             SubWorldCmd::PlayerLeave { player_id } => {
+                info!(?player_id, sw = ?self.id, "Player left sub-world");
                 self.players.remove(&player_id);
                 self.entities.remove(player_id);
                 self.log.info(
@@ -149,6 +152,7 @@ impl SubWorld {
                 action,
                 target: _,
             } => {
+                debug!(?player_id, ?action, "Player action received");
                 if let Some(ps) = self.players.get(&player_id) {
                     let pos = ps.pos;
                     let new_pos = match &action {
@@ -162,18 +166,17 @@ impl SubWorld {
                         ActionType::MoveDownRight => Coord::new(pos.x + 1, pos.y + 1),
                         ActionType::Wait => pos,
                         ActionType::MeleeAttack => {
+                            debug!("Player melee attack");
                             self.handle_player_attack(player_id);
                             return;
                         }
                         ActionType::Pickup => {
+                            debug!("Player pickup");
                             self.handle_pickup(player_id);
                             return;
                         }
                         _ => {
-                            self.log.info(
-                                self.turn,
-                                format!("Player {} action {:?} not implemented", player_id, action),
-                            );
+                            warn!(?action, "Action not implemented");
                             return;
                         }
                     };
@@ -185,6 +188,7 @@ impl SubWorld {
                                 .entities_in_radius(new_pos.x, new_pos.y, 0)
                                 .is_empty()
                         {
+                            debug!(from = ?pos, to = ?new_pos, "Player moved");
                             self.entities.move_entity(player_id, new_pos);
                             if let Some(ps) = self.players.get_mut(&player_id) {
                                 ps.pos = new_pos;
@@ -218,6 +222,7 @@ impl SubWorld {
         }
     }
 
+    #[instrument(level = "debug", skip(self))]
     fn handle_player_attack(&mut self, player_id: u32) {
         let player_pos = match self.players.get(&player_id) {
             Some(ps) => ps.pos,
@@ -259,6 +264,8 @@ impl SubWorld {
             .map(|e| e.name.clone())
             .unwrap_or_else(|| "unknown".into());
 
+        info!(target_id, damage = result.damage, critical = result.critical, "Melee attack result");
+
         self.log.combat(
             self.turn,
             &attacker_name,
@@ -292,25 +299,27 @@ impl SubWorld {
             .collect();
 
         if ground.is_empty() {
+            debug!("Nothing to pick up");
             self.log.info(self.turn, "Nothing to pick up here.");
             return;
         }
 
+        let mut picked_up = 0;
         for item_id in ground {
             if self
                 .items
                 .remove_at(player_pos.x, player_pos.y, item_id)
                 .is_some()
             {
-                self.log.info(
-                    self.turn,
-                    format!("Player {} picks up an item.", player_id),
-                );
+                picked_up += 1;
             }
         }
+        debug!(picked_up, "Items picked up");
     }
 
     fn advance_ai(&mut self) {
+        let entity_count = self.entities.all().count();
+        debug!(entity_count, turn = self.turn, "Advancing AI");
         let player_positions: Vec<(u32, Coord)> =
             self.players.iter().map(|(id, ps)| (*id, ps.pos)).collect();
 
@@ -375,6 +384,7 @@ impl SubWorld {
         }
     }
 
+    #[instrument(level = "debug", skip(self))]
     fn emit_transfer(&mut self, player_id: u32, to_sw: (i64, i64), pos: Coord) {
         if let Some(event_tx) = &self.event_tx {
             let player_tx = match self.players.get(&player_id) {
@@ -409,6 +419,7 @@ impl SubWorld {
         }
     }
 
+    #[instrument(level = "trace", skip(self))]
     async fn broadcast_all(&mut self) {
         let player_ids: Vec<u32> = self.players.keys().copied().collect();
         for pid in player_ids {

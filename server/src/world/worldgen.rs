@@ -1,5 +1,6 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use tracing::{debug, instrument};
 
 use crate::world::entity::{EntityManager, EntityType};
 use crate::world::item::{ItemManager, ItemType};
@@ -13,6 +14,7 @@ const MIN_ROOMS: usize = 8;
 const MAX_ROOMS: usize = 16;
 const MAX_ATTEMPTS: usize = 200;
 
+#[instrument(level = "info", skip(map, entities, items), fields(sw_id = ?sw_id))]
 pub fn generate_sub_world(
     map: &mut GameMap,
     entities: &mut EntityManager,
@@ -46,6 +48,7 @@ pub fn generate_sub_world(
             rooms.push((x, y, w, h));
         }
     }
+    debug!(actual = rooms.len(), target = num_rooms, "Rooms generated");
 
     for i in 1..rooms.len() {
         let (x1, y1, w1, h1) = rooms[i - 1];
