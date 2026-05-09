@@ -2,7 +2,7 @@ extends Node
 
 func _input(event):
 	var c = get_parent().client
-	if not c or not c.is_connected():
+	if not c or not c.is_game_connected():
 		return
 
 	if event is InputEventKey and event.pressed:

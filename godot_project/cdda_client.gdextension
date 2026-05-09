@@ -7,3 +7,4 @@ reloadable = true
 [libraries]
 
 linux.debug.x86_64 = "res://../target/debug/libclient.so"
+windows.debug.x86_64 = "res://../target/debug/client.dll"

@@ -286,6 +286,10 @@ impl CddaClient {
                 }
                 self.state.apply_snapshot_owned(msg);
             }
+            ServerMessage::Error { code, text } => {
+                godot_error!("Server error ({}): {}", code, text);
+                self.connected = false;
+            }
             _ => {
                 self.state.apply_delta(&msg);
             }
