@@ -80,7 +80,9 @@ pub fn find_path(
             return Some(path);
         }
 
-        let cur_g = *g_score.get(&(current.pos.x, current.pos.y)).unwrap_or(&i32::MAX);
+        let cur_g = *g_score
+            .get(&(current.pos.x, current.pos.y))
+            .unwrap_or(&i32::MAX);
 
         if cur_g >= max_steps {
             continue;
@@ -100,9 +102,7 @@ pub fn find_path(
             }
 
             // Check if this tile is occupied (except for the goal)
-            if (nx, ny) != (goal.x, goal.y)
-                && !entities.entities_in_radius(nx, ny, 0).is_empty()
-            {
+            if (nx, ny) != (goal.x, goal.y) && !entities.entities_in_radius(nx, ny, 0).is_empty() {
                 continue;
             }
 

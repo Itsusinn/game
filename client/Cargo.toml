@@ -4,14 +4,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[lib]
-crate-type = ["cdylib", "lib"]
-
 [dependencies]
+game-client-core = { path = "../client-core" }
+game-engine = { path = "../engine" }
 protocol = { path = "../protocol" }
 quinn = "0.11"
 rmp-serde = "1"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
-godot = { git = "https://github.com/godot-rust/gdext.git", features = ["register-docs"] }
+egui = { version = "0.37", features = ["default_fonts"] }
+egui-wgpu = "0.37"
+egui-winit = "0.37"
+winit = "0.30.13"
+pollster = "0.4"
+png = "0.18"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+server = { path = "../server" }

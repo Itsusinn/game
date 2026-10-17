@@ -1,6 +1,4 @@
-mod network;
-mod storage;
-mod world;
+use server::{network, storage, world};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,8 +30,8 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("CDDA_SAVE_PATH").unwrap_or_else(|_| "./save/world.bin".to_string()),
     );
 
-    // Try to restore world seed from a previous save.
-    let world_seed = match load_world_from(&save_path) {
+    // Preserve malformed saves: do not silently replace them with a new world.
+    let mut wm = match load_world_from(&save_path) {
         Ok(saved) => {
             info!(
                 path = %save_path.display(),
@@ -41,20 +39,23 @@ async fn main() -> anyhow::Result<()> {
                 sub_world_count = saved.sub_worlds.len(),
                 "Loaded world from save"
             );
-            saved.world_seed
+            WorldManager::from_saved(saved)?
         }
         Err(e) => {
+            if save_path.exists() {
+                return Err(e.context("existing save could not be restored"));
+            }
             info!(
                 path = %save_path.display(),
                 reason = %e,
                 world_seed = DEFAULT_SEED,
                 "No save loaded, starting fresh"
             );
-            DEFAULT_SEED
+            WorldManager::new(DEFAULT_SEED)
         }
     };
 
-    let mut wm = WorldManager::new(world_seed);
+    let world_seed = wm.world_seed;
     let event_rx = wm.take_event_rx().expect("take_event_rx called once");
     let manager = Arc::new(Mutex::new(wm));
 
@@ -66,14 +67,28 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let addr = "0.0.0.0:9876".parse()?;
+    let addr = std::env::var("CDDA_BIND")
+        .unwrap_or_else(|_| "127.0.0.1:9876".into())
+        .parse()?;
     info!(%addr, world_seed, "Starting server");
 
+    let run_seconds = std::env::var("CDDA_RUN_SECONDS")
+        .ok()
+        .map(|s| s.parse::<u64>())
+        .transpose()?;
     let shutdown = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            error!(error = %e, "Failed to install ctrl_c handler");
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(e) = result { error!(error = %e, "Failed to install ctrl_c handler"); }
+            }
+            _ = async {
+                match run_seconds {
+                    Some(seconds) => tokio::time::sleep(std::time::Duration::from_secs(seconds)).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {}
         }
-        info!("Ctrl+C received");
+        info!("Shutdown requested");
     };
 
     network::run_server(addr, manager.clone(), shutdown).await?;
@@ -105,6 +120,7 @@ async fn run_event_processor(
                 to_sw,
                 pos,
                 tx,
+                previous,
             } => {
                 info!(
                     player_id,
@@ -116,7 +132,7 @@ async fn run_event_processor(
                 manager
                     .lock()
                     .await
-                    .transfer_player(player_id, to_sw, pos, tx)
+                    .transfer_player(player_id, to_sw, pos, tx, Some(previous))
                     .await;
             }
         }

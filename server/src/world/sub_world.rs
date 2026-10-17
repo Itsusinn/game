@@ -26,7 +26,10 @@ pub struct SubWorld {
     pub event_tx: Option<mpsc::UnboundedSender<SubWorldEvent>>,
 }
 
+#[derive(Debug)]
 pub struct PlayerState {
+    pub last_seq: u32,
+    pub inventory: Vec<protocol::InventoryEntry>,
     pub pos: Coord,
     pub tx: mpsc::Sender<ServerMessage>,
     pub hp: i32,
@@ -41,12 +44,14 @@ pub enum SubWorldCmd {
         player_id: u32,
         pos: Coord,
         tx: mpsc::Sender<ServerMessage>,
+        previous: Option<PlayerState>,
     },
     PlayerLeave {
         player_id: u32,
     },
     PlayerAction {
         player_id: u32,
+        seq: u32,
         action: ActionType,
         target: Option<Coord>,
     },
@@ -62,10 +67,23 @@ pub enum SubWorldEvent {
         to_sw: (i64, i64),
         pos: Coord,
         tx: mpsc::Sender<ServerMessage>,
+        previous: PlayerState,
     },
 }
 
 impl SubWorld {
+    fn find_spawn(&self, preferred: Coord) -> Coord {
+        (0..self.map.height())
+            .flat_map(|y| (0..self.map.width()).map(move |x| Coord::new(x, y)))
+            .filter(|p| {
+                self.map
+                    .get_tile(p.x, p.y)
+                    .is_some_and(|t| t.tile_type == TileType::Floor)
+            })
+            .filter(|p| self.entities.entities_in_radius(p.x, p.y, 0).is_empty())
+            .min_by_key(|p| (p.x - preferred.x).abs() + (p.y - preferred.y).abs())
+            .unwrap_or(preferred)
+    }
     #[instrument(level = "info", fields(sw_id = ?id))]
     pub fn new(id: (i64, i64), world_seed: u64) -> Self {
         info!("Generating new sub-world");
@@ -112,28 +130,32 @@ impl SubWorld {
 
     async fn handle_cmd(&mut self, cmd: SubWorldCmd) {
         match cmd {
-            SubWorldCmd::PlayerJoin { player_id, pos, tx } => {
+            SubWorldCmd::PlayerJoin {
+                player_id,
+                pos,
+                tx,
+                previous,
+            } => {
+                let pos = self.find_spawn(pos);
                 info!(?player_id, ?pos, sw = ?self.id, "Player joined sub-world");
 
-                self.entities.spawn(
-                    format!("Player_{}", player_id),
-                    EntityType::Player,
-                    pos,
-                    100,
-                );
+                self.entities
+                    .spawn_player(player_id, pos, previous.as_ref().map_or(100, |p| p.hp));
 
-                self.players.insert(
-                    player_id,
-                    PlayerState {
-                        pos,
-                        tx,
-                        hp: 100,
-                        max_hp: 100,
-                        stamina: 100,
-                        hunger: 100,
-                        thirst: 100,
-                    },
-                );
+                let mut player = previous.unwrap_or_else(|| PlayerState {
+                    last_seq: 0,
+                    inventory: Vec::new(),
+                    pos,
+                    tx: tx.clone(),
+                    hp: 100,
+                    max_hp: 100,
+                    stamina: 100,
+                    hunger: 100,
+                    thirst: 100,
+                });
+                player.pos = pos;
+                player.tx = tx;
+                self.players.insert(player_id, player);
 
                 let state = self.build_world_state_for(player_id);
                 if let Some(ps) = self.players.get(&player_id) {
@@ -153,9 +175,17 @@ impl SubWorld {
 
             SubWorldCmd::PlayerAction {
                 player_id,
+                seq,
                 action,
                 target: _,
             } => {
+                let Some(ps) = self.players.get_mut(&player_id) else {
+                    return;
+                };
+                if seq <= ps.last_seq {
+                    return;
+                }
+                ps.last_seq = seq;
                 debug!(?player_id, ?action, "Player action received");
                 if let Some(ps) = self.players.get(&player_id) {
                     let pos = ps.pos;
@@ -179,44 +209,51 @@ impl SubWorld {
                             self.handle_pickup(player_id);
                             return;
                         }
+                        ActionType::Chat { text } => {
+                            self.log.info(
+                                self.turn,
+                                format!(
+                                    "Player_{player_id}: {}",
+                                    text.chars().take(256).collect::<String>()
+                                ),
+                            );
+                            return;
+                        }
                         _ => {
                             warn!(?action, "Action not implemented");
                             return;
                         }
                     };
 
-                    if new_pos != pos {
-                        if self.map.is_passable(new_pos.x, new_pos.y)
-                            && self
-                                .entities
-                                .entities_in_radius(new_pos.x, new_pos.y, 0)
-                                .is_empty()
-                        {
-                            debug!(from = ?pos, to = ?new_pos, "Player moved");
-                            self.entities.move_entity(player_id, new_pos);
-                            if let Some(ps) = self.players.get_mut(&player_id) {
-                                ps.pos = new_pos;
+                    if new_pos != pos
+                        && self.map.is_passable(new_pos.x, new_pos.y)
+                        && self
+                            .entities
+                            .entities_in_radius(new_pos.x, new_pos.y, 0)
+                            .is_empty()
+                    {
+                        debug!(from = ?pos, to = ?new_pos, "Player moved");
+                        self.entities.move_entity(player_id, new_pos);
+                        if let Some(ps) = self.players.get_mut(&player_id) {
+                            ps.pos = new_pos;
 
-                                if let Some(tile) = self.map.get_tile(new_pos.x, new_pos.y) {
-                                    match tile.tile_type {
-                                        TileType::StairsDown => {
-                                            self.emit_transfer(
-                                                player_id,
-                                                (self.id.0, self.id.1 + 1),
-                                                Coord::new(256, 256),
-                                            );
-                                            return;
-                                        }
-                                        TileType::StairsUp => {
-                                            self.emit_transfer(
-                                                player_id,
-                                                (self.id.0, self.id.1 - 1),
-                                                Coord::new(256, 256),
-                                            );
-                                            return;
-                                        }
-                                        _ => {}
+                            if let Some(tile) = self.map.get_tile(new_pos.x, new_pos.y) {
+                                match tile.tile_type {
+                                    TileType::StairsDown => {
+                                        self.emit_transfer(
+                                            player_id,
+                                            (self.id.0, self.id.1 + 1),
+                                            Coord::new(256, 256),
+                                        );
                                     }
+                                    TileType::StairsUp => {
+                                        self.emit_transfer(
+                                            player_id,
+                                            (self.id.0, self.id.1 - 1),
+                                            Coord::new(256, 256),
+                                        );
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -272,7 +309,12 @@ impl SubWorld {
             .map(|e| e.name.clone())
             .unwrap_or_else(|| "unknown".into());
 
-        info!(target_id, damage = result.damage, critical = result.critical, "Melee attack result");
+        info!(
+            target_id,
+            damage = result.damage,
+            critical = result.critical,
+            "Melee attack result"
+        );
 
         self.log.combat(
             self.turn,
@@ -283,8 +325,9 @@ impl SubWorld {
         );
 
         if result.damage > 0 {
-            if let Some(target) = self.entities.get_mut(target_id) {
+            if let Some(mut target) = self.entities.get(target_id) {
                 target.hp -= result.damage;
+                self.entities.set_hp(target_id, target.hp);
                 if target.hp <= 0 {
                     self.log.death(self.turn, &defender_name);
                     self.entities.remove(target_id);
@@ -314,14 +357,23 @@ impl SubWorld {
 
         let mut picked_up = 0;
         for item_id in ground {
-            if self
-                .items
-                .remove_at(player_pos.x, player_pos.y, item_id)
-                .is_some()
-            {
+            if let Some(item) = self.items.remove_at(player_pos.x, player_pos.y, item_id) {
+                if let Some(ps) = self.players.get_mut(&player_id) {
+                    if let Some(stack) = ps.inventory.iter_mut().find(|s| s.name == item.item.name)
+                    {
+                        stack.quantity += item.quantity;
+                    } else {
+                        ps.inventory.push(protocol::InventoryEntry {
+                            name: item.item.name,
+                            quantity: item.quantity,
+                        });
+                    }
+                }
                 picked_up += 1;
             }
         }
+        self.log
+            .info(self.turn, format!("Picked up {picked_up} item stacks."));
         debug!(picked_up, "Items picked up");
     }
 
@@ -350,7 +402,9 @@ impl SubWorld {
             let (_, def, _) = combat::get_entity_stats(entity.entity_type.to_u8());
 
             // Check if adjacent to player for attack
-            let dist = (entity.pos.x - target.x).abs().max((entity.pos.y - target.y).abs());
+            let dist = (entity.pos.x - target.x)
+                .abs()
+                .max((entity.pos.y - target.y).abs());
             if dist <= 1 {
                 let (atk, _, base_dmg) = combat::get_entity_stats(entity.entity_type.to_u8());
                 let result = combat::melee_attack(atk, def, base_dmg);
@@ -367,6 +421,7 @@ impl SubWorld {
                 if result.damage > 0 {
                     if let Some(ps) = self.players.get_mut(&player_positions[0].0) {
                         ps.hp -= result.damage;
+                        self.entities.set_hp(player_positions[0].0, ps.hp);
                         if ps.hp <= 0 {
                             ps.hp = 0;
                             self.log.death(self.turn, &player_name);
@@ -377,7 +432,7 @@ impl SubWorld {
             }
 
             // Use AI to move toward player
-            if let Some(action) = ai::ai_action(entity, &self.map, &self.entities, target, 8, 15) {
+            if let Some(action) = ai::ai_action(&entity, &self.map, &self.entities, target, 8, 15) {
                 if let Some(new_pos) = ai_action_to_pos(entity.pos, &action) {
                     if self.map.is_passable(new_pos.x, new_pos.y)
                         && self
@@ -408,16 +463,20 @@ impl SubWorld {
             let _ = player_tx.try_send(transfer_msg);
 
             // Emit event to WorldManager for server-side transfer
+            let previous = self
+                .players
+                .remove(&player_id)
+                .expect("player checked above");
             let _ = event_tx.send(SubWorldEvent::TransferPlayer {
                 player_id,
                 from_sw: self.id,
                 to_sw,
                 pos,
                 tx: player_tx,
+                previous,
             });
 
             // Remove from this sub-world
-            self.players.remove(&player_id);
             self.entities.remove(player_id);
 
             self.log.info(
@@ -433,8 +492,9 @@ impl SubWorld {
         for pid in player_ids {
             let state = self.build_world_state_for(pid);
             if let Some(ps) = self.players.get(&pid) {
-                if ps.tx.send(state).await.is_err() {
+                if ps.tx.try_send(state).is_err() {
                     self.players.remove(&pid);
+                    self.entities.remove(pid);
                 }
             }
         }
@@ -475,7 +535,13 @@ impl SubWorld {
                         tile_type: match tile.tile_type {
                             TileType::Floor => 0,
                             TileType::Wall => 1,
-                            TileType::Door { open } => if open { 2 } else { 3 },
+                            TileType::Door { open } => {
+                                if open {
+                                    2
+                                } else {
+                                    3
+                                }
+                            }
                             TileType::Water => 4,
                             TileType::StairsUp => 5,
                             TileType::StairsDown => 6,
@@ -510,6 +576,7 @@ impl SubWorld {
             .all_ground_items()
             .into_iter()
             .filter(|(coord, _)| visible.contains(coord))
+            .map(|(coord, item)| (local_to_global(coord, self.id), item))
             .collect();
 
         // Build explored array for view area
@@ -531,7 +598,7 @@ impl SubWorld {
         }
 
         ServerMessage::WorldState {
-            seq: self.turn as u32,
+            seq: ps.last_seq,
             player_pos: local_to_global(ps.pos, self.id),
             visible_tiles,
             explored,
@@ -540,6 +607,8 @@ impl SubWorld {
             items_ground,
             message_log: self.log.recent(20),
             hp: ps.hp,
+            max_hp: ps.max_hp,
+            inventory: ps.inventory.clone(),
             stamina: ps.stamina,
             hunger: ps.hunger,
             thirst: ps.thirst,
@@ -582,6 +651,95 @@ pub fn global_to_local(global: Coord) -> ((i64, i64), Coord) {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn action_ack_is_per_player_and_transfer_preserves_state() {
+        let mut sw = SubWorld::new((0, 0), 12345);
+        let (tx, _rx) = mpsc::channel(16);
+        sw.handle_cmd(SubWorldCmd::PlayerJoin {
+            player_id: 1,
+            pos: Coord::new(256, 256),
+            tx,
+            previous: None,
+        })
+        .await;
+        let position = sw.players[&1].pos;
+        assert!(sw.map.is_passable(position.x, position.y));
+        assert_eq!(sw.entities.get(1).unwrap().pos, position);
+        sw.turn = 1000;
+        sw.handle_cmd(SubWorldCmd::PlayerAction {
+            player_id: 1,
+            seq: 3,
+            action: ActionType::Wait,
+            target: None,
+        })
+        .await;
+        assert!(matches!(
+            sw.build_world_state_for(1),
+            ServerMessage::WorldState { seq: 3, .. }
+        ));
+        sw.handle_cmd(SubWorldCmd::PlayerAction {
+            player_id: 1,
+            seq: 2,
+            action: ActionType::MoveRight,
+            target: None,
+        })
+        .await;
+        assert_eq!(
+            sw.players[&1].pos, position,
+            "duplicate/outdated action must not execute"
+        );
+        let (event_tx, mut events) = mpsc::unbounded_channel();
+        sw.event_tx = Some(event_tx);
+        sw.players.get_mut(&1).unwrap().hp = 64;
+        sw.players
+            .get_mut(&1)
+            .unwrap()
+            .inventory
+            .push(protocol::InventoryEntry {
+                name: "bread".into(),
+                quantity: 2,
+            });
+        sw.emit_transfer(1, (0, 1), Coord::new(256, 256));
+        let SubWorldEvent::TransferPlayer { previous, tx, .. } = events.recv().await.unwrap();
+        let mut destination = SubWorld::new((0, 1), 12345);
+        destination
+            .handle_cmd(SubWorldCmd::PlayerJoin {
+                player_id: 1,
+                pos: Coord::new(256, 256),
+                tx,
+                previous: Some(previous),
+            })
+            .await;
+        assert_eq!(destination.players[&1].hp, 64);
+        assert_eq!(destination.players[&1].last_seq, 3);
+        assert_eq!(destination.players[&1].inventory[0].quantity, 2);
+        assert!(sw.entities.get(1).is_none());
+        assert_eq!(destination.entities.get(1).unwrap().hp, 64);
+    }
+
+    #[tokio::test]
+    async fn pickup_keeps_items_in_player_inventory() {
+        let mut sw = SubWorld::new((0, 0), 12345);
+        let (tx, _rx) = mpsc::channel(16);
+        sw.handle_cmd(SubWorldCmd::PlayerJoin {
+            player_id: 7,
+            pos: Coord::new(256, 256),
+            tx,
+            previous: None,
+        })
+        .await;
+        let pos = sw.players[&7].pos;
+        sw.items.spawn_ground(
+            "bread",
+            crate::world::item::ItemType::Food { nutrition: 30 },
+            pos,
+            2,
+        );
+        sw.handle_pickup(7);
+        assert!(!sw.players[&7].inventory.is_empty());
+        assert!(sw.items.items_at(pos.x, pos.y).is_empty());
+    }
+
     #[test]
     fn test_coord_conversion() {
         let global = Coord::new(600, -100);
@@ -605,7 +763,10 @@ mod tests {
                 }
             }
         }
-        assert!(floor_count > 100, "expected >100 floor tiles, got {floor_count}");
-        assert!(sw.entities.len() > 0, "expected some entities");
+        assert!(
+            floor_count > 100,
+            "expected >100 floor tiles, got {floor_count}"
+        );
+        assert!(!sw.entities.is_empty(), "expected some entities");
     }
 }

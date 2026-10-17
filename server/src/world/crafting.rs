@@ -22,12 +22,25 @@ impl CraftingManager {
             Recipe {
                 name: "Torch".into(),
                 ingredients: vec![("Stick".into(), 1), ("Cloth".into(), 1)],
-                result: ("Torch".into(), ItemType::Scroll { effect: "light".into() }, 1),
+                result: (
+                    "Torch".into(),
+                    ItemType::Scroll {
+                        effect: "light".into(),
+                    },
+                    1,
+                ),
             },
             Recipe {
                 name: "Improvised Weapon".into(),
                 ingredients: vec![("Stick".into(), 2), ("Stone".into(), 1)],
-                result: ("Club".into(), ItemType::Weapon { damage: 4, attack_bonus: 0 }, 1),
+                result: (
+                    "Club".into(),
+                    ItemType::Weapon {
+                        damage: 4,
+                        attack_bonus: 0,
+                    },
+                    1,
+                ),
             },
             Recipe {
                 name: "Trail Mix".into(),
@@ -93,7 +106,12 @@ impl ItemManager {
 
         // Spawn result
         let (name, item_type, quantity) = &recipe.result;
-        self.spawn_ground(name, item_type.clone(), protocol::Coord::new(x, y), *quantity);
+        self.spawn_ground(
+            name,
+            item_type.clone(),
+            protocol::Coord::new(x, y),
+            *quantity,
+        );
         Some(name.clone())
     }
 }

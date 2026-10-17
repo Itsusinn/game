@@ -98,11 +98,22 @@ pub fn generate_sub_world(
             let ix = rng.gen_range(*rx + 1..rx + rw - 1);
             let iy = rng.gen_range(*ry + 1..ry + rh - 1);
             let (item_name, item_type) = match rng.gen_range(0..5) {
-                0 => ("Short Sword", ItemType::Weapon { damage: 5, attack_bonus: 1 }),
+                0 => (
+                    "Short Sword",
+                    ItemType::Weapon {
+                        damage: 5,
+                        attack_bonus: 1,
+                    },
+                ),
                 1 => ("Leather Armor", ItemType::Armor { defense: 2 }),
                 2 => ("Health Potion", ItemType::Potion { heal: 20 }),
                 3 => ("Bread", ItemType::Food { nutrition: 30 }),
-                _ => ("Scroll of Light", ItemType::Scroll { effect: "light".into() }),
+                _ => (
+                    "Scroll of Light",
+                    ItemType::Scroll {
+                        effect: "light".into(),
+                    },
+                ),
             };
             items.spawn_ground(item_name, item_type, Coord::new(ix, iy), 1);
         }
@@ -110,19 +121,11 @@ pub fn generate_sub_world(
 
     if !rooms.is_empty() {
         let (sx, sy, sw, sh) = rooms[0];
-        map.set_tile(
-            sx + sw / 2,
-            sy + sh / 2,
-            Tile::new(TileType::StairsDown),
-        );
+        map.set_tile(sx + sw / 2, sy + sh / 2, Tile::new(TileType::StairsDown));
     }
     if rooms.len() > 1 {
         let (sx, sy, sw, sh) = rooms[rooms.len() - 1];
-        map.set_tile(
-            sx + sw / 2 + 1,
-            sy + sh / 2,
-            Tile::new(TileType::StairsUp),
-        );
+        map.set_tile(sx + sw / 2 + 1, sy + sh / 2, Tile::new(TileType::StairsUp));
     }
 
     if let Some((rx, ry, rw, rh)) = rooms.first() {

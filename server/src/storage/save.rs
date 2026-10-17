@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::world::map::GameMap;
+use crate::world::tile::Tile;
 use crate::world::tile::TileType;
+use protocol::{TileFlags, SUBWORLD_SIZE};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedMap {
@@ -26,6 +28,43 @@ pub struct SavedWorld {
     pub sub_worlds: HashMap<(i64, i64), SavedMap>,
 }
 
+impl SavedMap {
+    pub fn restore(&self) -> Result<GameMap> {
+        anyhow::ensure!(
+            self.width == SUBWORLD_SIZE && self.height == SUBWORLD_SIZE,
+            "unsupported saved map dimensions"
+        );
+        let count = (SUBWORLD_SIZE * SUBWORLD_SIZE) as usize;
+        anyhow::ensure!(
+            self.tiles.len() == count && self.explored.len() == count,
+            "invalid saved map length"
+        );
+        let mut map = GameMap::new();
+        for (index, saved) in self.tiles.iter().enumerate() {
+            let tile_type = match saved.tile_type {
+                0 => TileType::Floor,
+                1 => TileType::Wall,
+                2 => TileType::Door { open: true },
+                3 => TileType::Door { open: false },
+                4 => TileType::Water,
+                5 => TileType::StairsUp,
+                6 => TileType::StairsDown,
+                other => anyhow::bail!("unknown saved tile type {other}"),
+            };
+            map.set_tile(
+                index as i32 % self.width,
+                index as i32 / self.width,
+                Tile {
+                    tile_type,
+                    flags: TileFlags(saved.flags),
+                },
+            );
+        }
+        map.explored.clone_from(&self.explored);
+        Ok(map)
+    }
+}
+
 impl From<&GameMap> for SavedMap {
     fn from(map: &GameMap) -> Self {
         let mut tiles = Vec::new();
@@ -36,7 +75,13 @@ impl From<&GameMap> for SavedMap {
                         tile_type: match tile.tile_type {
                             TileType::Floor => 0,
                             TileType::Wall => 1,
-                            TileType::Door { open } => if open { 2 } else { 3 },
+                            TileType::Door { open } => {
+                                if open {
+                                    2
+                                } else {
+                                    3
+                                }
+                            }
                             TileType::Water => 4,
                             TileType::StairsUp => 5,
                             TileType::StairsDown => 6,
@@ -70,6 +115,9 @@ pub fn save_world_to(saved: &SavedWorld, filepath: &Path) -> Result<()> {
 pub fn load_world_from(filepath: &Path) -> Result<SavedWorld> {
     let data = std::fs::read(filepath).context("read world save file")?;
     let saved: SavedWorld = rmp_serde::from_slice(&data).context("deserialize world")?;
+    for map in saved.sub_worlds.values() {
+        map.restore()?;
+    }
     Ok(saved)
 }
 
@@ -97,6 +145,12 @@ mod tests {
         // Tile (11, 10) should have been encoded as Wall (1).
         let idx = (10 * map.width() + 11) as usize;
         assert_eq!(back.tiles[idx].tile_type, 1);
+        let restored = back.restore().unwrap();
+        assert_eq!(
+            restored.get_tile(12, 10).unwrap().tile_type,
+            TileType::Door { open: false }
+        );
+        assert_eq!(restored.explored, map.explored);
     }
 
     #[test]

@@ -20,9 +20,7 @@ pub fn ai_action(
 
     // Chase: if player is within chase radius, move toward them
     if dist <= chase_radius {
-        if let Some(next) =
-            pathfinding::find_step_toward(map, entity.pos, player_pos, entities)
-        {
+        if let Some(next) = pathfinding::find_step_toward(map, entity.pos, player_pos, entities) {
             let dx = next.x - entity.pos.x;
             let dy = next.y - entity.pos.y;
             return Some(dir_to_action(dx, dy));
@@ -34,7 +32,7 @@ pub fn ai_action(
         // Random step
         let dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)];
         // Use entity id as simple deterministic random seed per turn
-        let idx = ((entity.id as i32).wrapping_mul(7) % dirs.len() as i32) as usize;
+        let idx = (entity.id.wrapping_mul(7) as usize) % dirs.len();
         let (dx, dy) = dirs[idx];
         let nx = entity.pos.x + dx;
         let ny = entity.pos.y + dy;

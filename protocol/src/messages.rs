@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Coord, EntityData, ItemStack, LogEntry, TileData};
+use crate::types::{Coord, EntityData, InventoryEntry, ItemStack, LogEntry, TileData};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMessage {
@@ -60,6 +60,8 @@ pub enum ServerMessage {
         items_ground: Vec<(Coord, ItemStack)>,
         message_log: Vec<LogEntry>,
         hp: i32,
+        max_hp: i32,
+        inventory: Vec<InventoryEntry>,
         stamina: i32,
         thirst: i32,
         hunger: i32,
@@ -215,6 +217,8 @@ mod tests {
             )],
             message_log: vec![sample_log()],
             hp: 90,
+            max_hp: 100,
+            inventory: vec![],
             stamina: 80,
             thirst: 70,
             hunger: 60,

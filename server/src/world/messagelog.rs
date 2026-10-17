@@ -24,13 +24,16 @@ impl MessageLog {
         }
     }
 
-    pub fn combat(&mut self, turn: u64, attacker: &str, defender: &str, damage: i32, critical: bool) {
+    pub fn combat(
+        &mut self,
+        turn: u64,
+        attacker: &str,
+        defender: &str,
+        damage: i32,
+        critical: bool,
+    ) {
         if damage == 0 {
-            self.add(
-                format!("{attacker} misses {defender}!"),
-                0x888888,
-                turn,
-            );
+            self.add(format!("{attacker} misses {defender}!"), 0x888888, turn);
         } else if critical {
             self.add(
                 format!("{attacker} critically hits {defender} for {damage} damage!"),
@@ -48,18 +51,17 @@ impl MessageLog {
 
     pub fn movement(&mut self, turn: u64, entity: &str, from: Coord, to: Coord) {
         self.add(
-            format!("{entity} moves from ({},{}) to ({},{})", from.x, from.y, to.x, to.y),
+            format!(
+                "{entity} moves from ({},{}) to ({},{})",
+                from.x, from.y, to.x, to.y
+            ),
             0x8888FF,
             turn,
         );
     }
 
     pub fn death(&mut self, turn: u64, entity: &str) {
-        self.add(
-            format!("{entity} has been slain!"),
-            0xFF0000,
-            turn,
-        );
+        self.add(format!("{entity} has been slain!"), 0xFF0000, turn);
     }
 
     pub fn info(&mut self, turn: u64, text: impl Into<String>) {
@@ -67,12 +69,7 @@ impl MessageLog {
     }
 
     pub fn recent(&self, count: usize) -> Vec<LogEntry> {
-        self.entries
-            .iter()
-            .rev()
-            .take(count)
-            .cloned()
-            .collect()
+        self.entries.iter().rev().take(count).cloned().collect()
     }
 
     pub fn all(&self) -> &[LogEntry] {

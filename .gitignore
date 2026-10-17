@@ -1,8 +1,9 @@
 /target
-**/*.so
-**/*.dylib
+/save
 *.log
 .env
+**/*.so
+**/*.dylib
 *.uid
 .godot/
 gdextension_interface.h

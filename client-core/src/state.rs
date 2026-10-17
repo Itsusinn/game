@@ -14,6 +14,7 @@ pub struct GameState {
     pub message_log: Vec<LogEntry>,
     pub hp: i32,
     pub max_hp: i32,
+    pub inventory: Vec<InventoryEntry>,
     pub stamina: i32,
     pub thirst: i32,
     pub hunger: i32,
@@ -35,6 +36,7 @@ impl Default for GameState {
             message_log: Vec::new(),
             hp: 100,
             max_hp: 100,
+            inventory: vec![],
             stamina: 100,
             thirst: 100,
             hunger: 100,
@@ -55,6 +57,8 @@ impl GameState {
             items_ground,
             message_log,
             hp,
+            max_hp,
+            inventory,
             stamina,
             thirst,
             hunger,
@@ -69,6 +73,8 @@ impl GameState {
             self.items_ground = items_ground.clone();
             self.message_log = message_log.clone();
             self.hp = *hp;
+            self.max_hp = *max_hp;
+            self.inventory = inventory.clone();
             self.stamina = *stamina;
             self.thirst = *thirst;
             self.hunger = *hunger;
@@ -86,6 +92,8 @@ impl GameState {
             items_ground,
             message_log,
             hp,
+            max_hp,
+            inventory,
             stamina,
             thirst,
             hunger,
@@ -100,6 +108,8 @@ impl GameState {
             self.items_ground = items_ground;
             self.message_log = message_log;
             self.hp = hp;
+            self.max_hp = max_hp;
+            self.inventory = inventory;
             self.stamina = stamina;
             self.thirst = thirst;
             self.hunger = hunger;
@@ -137,9 +147,7 @@ impl GameState {
                 }
             }
             ServerMessage::ChatMessage {
-                player_name,
-                text,
-                ..
+                player_name, text, ..
             } => {
                 self.message_log.push(LogEntry {
                     text: format!("{}: {}", player_name, text),
@@ -227,6 +235,8 @@ mod tests {
                 turn: 1,
             }],
             hp: 88,
+            max_hp: 100,
+            inventory: vec![],
             stamina: 77,
             thirst: 66,
             hunger: 55,

@@ -17,8 +17,8 @@ impl Coord {
 
     pub fn sub_world_id(&self) -> (i64, i64) {
         (
-            self.x.div_euclid(SUBWORLD_SIZE as i32) as i64,
-            self.y.div_euclid(SUBWORLD_SIZE as i32) as i64,
+            self.x.div_euclid(SUBWORLD_SIZE) as i64,
+            self.y.div_euclid(SUBWORLD_SIZE) as i64,
         )
     }
 }
@@ -72,6 +72,14 @@ pub struct EntityData {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ItemStack {
     pub item_id: u32,
+    pub quantity: u32,
+}
+
+/// Inventory display stacks use a world-independent item definition name.
+/// Ground item IDs are local to a sub-world and must not be merged across regions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InventoryEntry {
+    pub name: String,
     pub quantity: u32,
 }
 

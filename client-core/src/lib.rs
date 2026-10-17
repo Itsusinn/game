@@ -1,0 +1,10 @@
+//! Platform-independent client state and prediction.
+//!
+//! Network adapters deliver protocol messages; renderers consume this state.
+//! This crate deliberately has no windowing, GPU, async runtime, or transport
+//! dependency so the desktop and future browser hosts can share it.
+
+pub mod input_queue;
+pub mod model;
+pub mod prediction;
+pub mod state;

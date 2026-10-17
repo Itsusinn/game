@@ -8,21 +8,20 @@ pub fn compute_fov(map: &GameMap, origin: Coord, radius: i32, visible: &mut Hash
     visible.insert(origin);
 
     for octant in 0..8 {
-        cast_light(map, origin.x, origin.y, radius, 1, 1.0, 0.0, octant, visible);
+        cast_light(map, origin, radius, 1, [1.0, 0.0], octant, visible);
     }
 }
 
 fn cast_light(
     map: &GameMap,
-    cx: i32,
-    cy: i32,
+    origin: Coord,
     radius: i32,
     row: i32,
-    mut start_slope: f64,
-    end_slope: f64,
+    slopes: [f64; 2],
     octant: u8,
     visible: &mut HashSet<Coord>,
 ) {
+    let [mut start_slope, end_slope] = slopes;
     if start_slope < end_slope {
         return;
     }
@@ -44,7 +43,7 @@ fn cast_light(
                 break;
             }
 
-            let (sx, sy) = transform_octant(cx, cy, dx, -dy, octant);
+            let (sx, sy) = transform_octant(origin.x, origin.y, dx, -dy, octant);
 
             if dx * dx + dy * dy <= radius * radius {
                 visible.insert(Coord::new(sx, sy));
@@ -61,12 +60,10 @@ fn cast_light(
                 blocked = true;
                 cast_light(
                     map,
-                    cx,
-                    cy,
+                    origin,
                     radius,
                     j + 1,
-                    start_slope,
-                    left_slope,
+                    [start_slope, left_slope],
                     octant,
                     visible,
                 );

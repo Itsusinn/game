@@ -1,142 +1,183 @@
-use anyhow::{anyhow, Context, Result};
-use quinn::{Connection, Endpoint, RecvStream, SendStream, ClientConfig};
-use rustls::pki_types::ServerName;
-use std::sync::Arc;
-use std::net::SocketAddr;
-use std::time::Duration;
-use tokio::time::timeout;
+//! Desktop QUIC adapter. A persistent reader owns the receive stream; sending
+//! actions cannot cancel a partially consumed length-prefixed frame.
+use anyhow::{Context, Result};
+use protocol::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
+use quinn::{Connection, Endpoint, RecvStream, SendStream};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
+use tokio::sync::{mpsc, oneshot};
 
-use protocol::{ClientMessage, ServerMessage};
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const RECV_TIMEOUT: Duration = Duration::from_secs(60);
-
-pub struct NetworkClient {
-    endpoint: Endpoint,
-    connection: Connection,
-    send: SendStream,
-    recv: RecvStream,
+pub enum NetworkEvent {
+    Message(ServerMessage),
+    Disconnected(String),
+}
+pub trait Transport {
+    fn send(&self, message: ClientMessage) -> Result<(), String>;
+    fn poll(&mut self) -> Option<NetworkEvent>;
 }
 
-impl NetworkClient {
-    pub async fn connect(server_addr: SocketAddr) -> Result<Self> {
-        let provider = rustls::crypto::aws_lc_rs::default_provider();
-        let tls_config = rustls::ClientConfig::builder_with_provider(provider.into())
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .context("set TLS 1.3")?
-            .dangerous()
-            .with_custom_certificate_verifier(skip_verifier())
-            .with_no_client_auth();
-
-        let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
-            .context("convert to quic client config")?;
-
-        let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)
-            .context("create client endpoint")?;
-        endpoint.set_default_client_config(ClientConfig::new(Arc::new(quic_config)));
-
-        let connecting = endpoint
-            .connect(server_addr, "localhost")
-            .context("connect to server")?;
-
-        let connection = timeout(CONNECT_TIMEOUT, connecting)
-            .await
-            .map_err(|_| anyhow!("connect timed out after {:?}", CONNECT_TIMEOUT))?
-            .context("await connection")?;
-
-        let (send, recv) = timeout(CONNECT_TIMEOUT, connection.open_bi())
-            .await
-            .map_err(|_| anyhow!("open_bi timed out after {:?}", CONNECT_TIMEOUT))?
-            .context("open bi stream")?;
-
+pub struct QuicSession {
+    outgoing: mpsc::Sender<ClientMessage>,
+    incoming: mpsc::Receiver<NetworkEvent>,
+    shutdown: Option<oneshot::Sender<()>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl QuicSession {
+    pub fn connect(address: SocketAddr, name: String, certificate: Vec<u8>) -> Result<Self> {
+        let (outgoing, outgoing_rx) = mpsc::channel(64);
+        let (incoming_tx, incoming) = mpsc::channel(256);
+        let (shutdown, shutdown_rx) = oneshot::channel();
+        let worker = std::thread::Builder::new()
+            .name("game-network".into())
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = incoming_tx.try_send(NetworkEvent::Disconnected(e.to_string()));
+                        return;
+                    }
+                };
+                runtime.block_on(async move {
+                    let result = run_session(
+                        address,
+                        name,
+                        certificate,
+                        outgoing_rx,
+                        incoming_tx.clone(),
+                        shutdown_rx,
+                    )
+                    .await;
+                    let reason = match result {
+                        Ok(()) => "Connection closed".into(),
+                        Err(e) => format!("{e:#}"),
+                    };
+                    let _ = incoming_tx.send(NetworkEvent::Disconnected(reason)).await;
+                });
+            })?;
         Ok(Self {
-            endpoint,
-            connection,
-            send,
-            recv,
+            outgoing,
+            incoming,
+            shutdown: Some(shutdown),
+            worker: Some(worker),
         })
     }
-
-    pub async fn send_message(&mut self, msg: &ClientMessage) -> Result<()> {
-        let data = rmp_serde::to_vec(msg).context("serialize message")?;
-        let len = data.len() as u32;
-        self.send.write_all(&len.to_be_bytes()).await?;
-        self.send.write_all(&data).await?;
-        Ok(())
+}
+impl Transport for QuicSession {
+    fn send(&self, message: ClientMessage) -> Result<(), String> {
+        self.outgoing
+            .try_send(message)
+            .map_err(|e| format!("Unable to queue action: {e}"))
     }
-
-    pub async fn recv_message(&mut self) -> Result<ServerMessage> {
-        let mut len_buf = [0u8; 4];
-        timeout(RECV_TIMEOUT, self.recv.read_exact(&mut len_buf))
-            .await
-            .map_err(|_| anyhow!("recv length-prefix timed out after {:?}", RECV_TIMEOUT))??;
-        let msg_len = u32::from_be_bytes(len_buf) as usize;
-        if msg_len > 1_048_576 {
-            anyhow::bail!("frame too large: {msg_len}");
+    fn poll(&mut self) -> Option<NetworkEvent> {
+        self.incoming.try_recv().ok()
+    }
+}
+impl Drop for QuicSession {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
         }
-        let mut buf = vec![0u8; msg_len];
-        timeout(RECV_TIMEOUT, self.recv.read_exact(&mut buf))
-            .await
-            .map_err(|_| anyhow!("recv body timed out after {:?}", RECV_TIMEOUT))??;
-        let msg: ServerMessage = rmp_serde::from_slice(&buf)?;
-        Ok(msg)
-    }
-
-    pub fn close(&self) {
-        self.connection.close(0u32.into(), b"bye");
+        // Wake a worker waiting to deliver a final message before joining it.
+        self.incoming.close();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
-fn skip_verifier() -> Arc<SkipServerVerification> {
-    Arc::new(SkipServerVerification)
+pub async fn connect_endpoint(
+    address: SocketAddr,
+    certificate: Vec<u8>,
+) -> Result<(Endpoint, Connection)> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(rustls::pki_types::CertificateDer::from(certificate))
+        .context("load server certificate")?;
+    let tls = rustls::ClientConfig::builder_with_provider(
+        rustls::crypto::aws_lc_rs::default_provider().into(),
+    )
+    .with_protocol_versions(&[&rustls::version::TLS13])?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)?;
+    let bind = if address.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
+    let mut endpoint = Endpoint::client(bind.parse()?)?;
+    endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(crypto)));
+    let connection = tokio::time::timeout(
+        Duration::from_secs(5),
+        endpoint.connect(address, "localhost")?,
+    )
+    .await??;
+    Ok((endpoint, connection))
 }
-
-#[derive(Debug)]
-struct SkipServerVerification;
-
-impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer,
-        _intermediates: &[rustls::pki_types::CertificateDer],
-        _server_name: &ServerName,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls::pki_types::CertificateDer,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        use rustls::SignatureScheme;
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::ECDSA_NISTP521_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ED25519,
-        ]
-    }
+async fn run_session(
+    address: SocketAddr,
+    name: String,
+    certificate: Vec<u8>,
+    mut outgoing: mpsc::Receiver<ClientMessage>,
+    incoming: mpsc::Sender<NetworkEvent>,
+    mut shutdown: oneshot::Receiver<()>,
+) -> Result<()> {
+    let (endpoint, connection) = tokio::select! {
+        _ = &mut shutdown => return Ok(()),
+        result = connect_endpoint(address, certificate) => result?,
+    };
+    let io = async {
+        let (mut send, mut recv) = connection.open_bi().await?;
+        write_message(
+            &mut send,
+            &ClientMessage::Login {
+                version: PROTOCOL_VERSION,
+                player_name: name,
+            },
+        )
+        .await?;
+        let read = async {
+            loop {
+                incoming
+                    .send(NetworkEvent::Message(read_message(&mut recv).await?))
+                    .await
+                    .context("UI receiver closed")?;
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+        let write = async {
+            while let Some(message) = outgoing.recv().await {
+                write_message(&mut send, &message).await?;
+            }
+            Ok::<(), anyhow::Error>(())
+        };
+        tokio::select! { result = read => result, result = write => result }
+    };
+    let result = tokio::select! {
+        _ = &mut shutdown => Ok(()),
+        result = io => result,
+    };
+    connection.close(0u32.into(), b"client shutdown");
+    // Keep the runtime alive long enough to transmit CONNECTION_CLOSE.
+    let _ = tokio::time::timeout(Duration::from_secs(1), endpoint.wait_idle()).await;
+    result
+}
+pub async fn write_message(send: &mut SendStream, message: &ClientMessage) -> Result<()> {
+    let data = rmp_serde::to_vec(message)?;
+    anyhow::ensure!(data.len() <= 1_048_576, "message too large");
+    send.write_all(&(data.len() as u32).to_be_bytes()).await?;
+    send.write_all(&data).await?;
+    Ok(())
+}
+pub async fn read_message(recv: &mut RecvStream) -> Result<ServerMessage> {
+    let mut prefix = [0; 4];
+    recv.read_exact(&mut prefix).await?;
+    let size = u32::from_be_bytes(prefix) as usize;
+    anyhow::ensure!(size <= 1_048_576, "frame too large: {size}");
+    let mut data = vec![0; size];
+    recv.read_exact(&mut data).await?;
+    Ok(rmp_serde::from_slice(&data)?)
 }

@@ -33,22 +33,13 @@ mod tests {
     fn test_predict_move() {
         let pos = Coord::new(10, 10);
         assert_eq!(predict_move(pos, &ActionType::MoveUp), Coord::new(10, 9));
-        assert_eq!(
-            predict_move(pos, &ActionType::MoveDown),
-            Coord::new(10, 11)
-        );
-        assert_eq!(
-            predict_move(pos, &ActionType::MoveLeft),
-            Coord::new(9, 10)
-        );
+        assert_eq!(predict_move(pos, &ActionType::MoveDown), Coord::new(10, 11));
+        assert_eq!(predict_move(pos, &ActionType::MoveLeft), Coord::new(9, 10));
         assert_eq!(
             predict_move(pos, &ActionType::MoveRight),
             Coord::new(11, 10)
         );
-        assert_eq!(
-            predict_move(pos, &ActionType::MoveUpLeft),
-            Coord::new(9, 9)
-        );
+        assert_eq!(predict_move(pos, &ActionType::MoveUpLeft), Coord::new(9, 9));
         assert_eq!(
             predict_move(pos, &ActionType::MoveUpRight),
             Coord::new(11, 9)

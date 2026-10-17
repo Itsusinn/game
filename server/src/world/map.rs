@@ -6,6 +6,12 @@ pub struct GameMap {
     pub explored: Vec<bool>,
 }
 
+impl Default for GameMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GameMap {
     pub fn new() -> Self {
         let count = (SUBWORLD_SIZE as usize) * (SUBWORLD_SIZE as usize);
@@ -20,7 +26,7 @@ impl GameMap {
     }
 
     pub fn in_bounds(&self, x: i32, y: i32) -> bool {
-        x >= 0 && x < SUBWORLD_SIZE && y >= 0 && y < SUBWORLD_SIZE
+        (0..SUBWORLD_SIZE).contains(&x) && (0..SUBWORLD_SIZE).contains(&y)
     }
 
     pub fn get_tile(&self, x: i32, y: i32) -> Option<&Tile> {
@@ -46,7 +52,9 @@ impl GameMap {
     }
 
     pub fn is_passable(&self, x: i32, y: i32) -> bool {
-        self.get_tile(x, y).map(|t| t.is_passable()).unwrap_or(false)
+        self.get_tile(x, y)
+            .map(|t| t.is_passable())
+            .unwrap_or(false)
     }
 
     pub fn blocks_vision(&self, x: i32, y: i32) -> bool {
@@ -71,12 +79,7 @@ impl GameMap {
         SUBWORLD_SIZE
     }
 
-    pub fn tiles_in_radius(
-        &self,
-        cx: i32,
-        cy: i32,
-        radius: i32,
-    ) -> Vec<(i32, i32, &Tile)> {
+    pub fn tiles_in_radius(&self, cx: i32, cy: i32, radius: i32) -> Vec<(i32, i32, &Tile)> {
         let mut result = Vec::new();
         for dy in -radius..=radius {
             for dx in -radius..=radius {

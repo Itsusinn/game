@@ -12,30 +12,32 @@ use protocol::{ClientMessage, Coord, ServerMessage};
 use crate::world::world_manager::WorldManager;
 
 #[instrument(level = "info")]
-pub fn make_server_endpoint(addr: std::net::SocketAddr) -> Result<Endpoint> {
+pub fn make_server_endpoint(addr: std::net::SocketAddr) -> Result<(Endpoint, Vec<u8>)> {
     let certified_key = generate_simple_self_signed(vec!["localhost".to_string()])
         .context("generate self-signed cert")?;
 
     let cert_der = certified_key.cert.der().to_vec();
     let key_der = certified_key.key_pair.serialize_der();
 
-    let tls_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![CertificateDer::from(cert_der)],
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der)),
-        )
-        .context("build rustls server config")?;
+    let tls_config = rustls::ServerConfig::builder_with_provider(
+        rustls::crypto::aws_lc_rs::default_provider().into(),
+    )
+    .with_protocol_versions(&[&rustls::version::TLS13])?
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![CertificateDer::from(cert_der.clone())],
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der)),
+    )
+    .context("build rustls server config")?;
 
     let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
         .context("convert to quic server config")?;
 
     let server_config = ServerConfig::with_crypto(Arc::new(quic_config));
-    let endpoint = Endpoint::server(server_config, addr)
-        .context("create quinn endpoint")?;
+    let endpoint = Endpoint::server(server_config, addr).context("create quinn endpoint")?;
 
     info!("TLS endpoint created with self-signed cert");
-    Ok(endpoint)
+    Ok((endpoint, cert_der))
 }
 
 /// Run the QUIC accept loop until either the endpoint closes or `shutdown` resolves.
@@ -45,7 +47,22 @@ pub async fn run_server(
     wm: Arc<Mutex<WorldManager>>,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
-    let endpoint = make_server_endpoint(addr)?;
+    let (endpoint, certificate) = make_server_endpoint(addr)?;
+    let cert_path = std::path::PathBuf::from(
+        std::env::var("CDDA_CERT_PATH").unwrap_or_else(|_| "save/server.cert.der".into()),
+    );
+    if let Some(parent) = cert_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&cert_path, certificate)?;
+    serve_endpoint(endpoint, wm, shutdown).await
+}
+
+pub async fn serve_endpoint(
+    endpoint: Endpoint,
+    wm: Arc<Mutex<WorldManager>>,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<()> {
     info!("Server listening");
 
     tokio::pin!(shutdown);
@@ -93,30 +110,47 @@ pub async fn run_server(
 }
 
 #[instrument(level = "debug", skip(connection, wm), fields(addr = %connection.remote_address()))]
-async fn handle_connection(
-    connection: Connection,
-    wm: Arc<Mutex<WorldManager>>,
-) -> Result<()> {
-    let (send, recv) = connection.accept_bi().await?;
-    let (send, mut recv) = (send, recv);
+async fn handle_connection(connection: Connection, wm: Arc<Mutex<WorldManager>>) -> Result<()> {
+    let (send, recv) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), connection.accept_bi()).await??;
+    let (mut send, mut recv) = (send, recv);
 
     // Read login message
-    let frame = read_frame(&mut recv).await?;
-    let msg: ClientMessage = rmp_serde::from_slice(&frame)
-        .context("deserialize login")?;
+    let frame =
+        tokio::time::timeout(std::time::Duration::from_secs(10), read_frame(&mut recv)).await??;
+    let msg: ClientMessage = rmp_serde::from_slice(&frame).context("deserialize login")?;
 
-    let (pid, player_name, player_rx) = match msg {
+    let (pid, player_rx) = match msg {
         ClientMessage::Login {
-            version: _,
+            version,
             player_name,
         } => {
-            let mut wm = wm.lock().await;
-            let pid = wm.allocate_player_id();
+            anyhow::ensure!(
+                version == protocol::PROTOCOL_VERSION,
+                "protocol version mismatch"
+            );
+            anyhow::ensure!(player_name.len() <= 128, "player name too long");
+            let mut manager = wm.lock().await;
+            let pid = manager.allocate_player_id();
             let (player_tx, player_rx) = mpsc::channel::<ServerMessage>(64);
             let spawn_pos = Coord::new(256, 256);
-            wm.register_player(pid, spawn_pos, player_tx).await;
+            let world_seed = manager.world_seed;
+            drop(manager);
+            write_frame(
+                &mut send,
+                &rmp_serde::to_vec(&ServerMessage::LoginAccepted {
+                    player_id: pid,
+                    sub_world_id: (0, 0),
+                    world_seed,
+                })?,
+            )
+            .await?;
+            wm.lock()
+                .await
+                .register_player(pid, spawn_pos, player_tx)
+                .await;
             info!(player_id = pid, %player_name, ?spawn_pos, "Player logged in");
-            (pid, player_name, player_rx)
+            (pid, player_rx)
         }
         _ => anyhow::bail!("expected login message"),
     };
@@ -124,8 +158,9 @@ async fn handle_connection(
     // Spawn forwarder: SubWorld → client
     let send_arc = Arc::new(Mutex::new(send));
     let send_clone = send_arc.clone();
+    let writer_connection = connection.clone();
     let forwarder_span = span!(Level::DEBUG, "msg_forwarder", player_id = pid);
-    tokio::spawn(
+    let forwarder = tokio::spawn(
         async move {
             let mut rx = player_rx;
             while let Some(msg) = rx.recv().await {
@@ -137,11 +172,12 @@ async fn handle_connection(
                     }
                 };
                 let mut s = send_clone.lock().await;
-                if write_frame(&mut *s, &data).await.is_err() {
+                if write_frame(&mut s, &data).await.is_err() {
                     break;
                 }
             }
             debug!("Message forwarder stopped");
+            writer_connection.close(0u32.into(), b"server stream ended");
         }
         .instrument(forwarder_span),
     );
@@ -149,56 +185,65 @@ async fn handle_connection(
     let player_id = pid;
 
     // Main loop: handle client messages
-    loop {
-        let frame = match read_frame(&mut recv).await {
-            Ok(f) => f,
-            Err(_) => break,
-        };
+    let result: Result<()> = async {
+        loop {
+            let frame = match read_frame(&mut recv).await {
+                Ok(f) => f,
+                Err(_) => break,
+            };
 
-        let msg: ClientMessage = match rmp_serde::from_slice(&frame) {
-            Ok(m) => m,
-            Err(e) => {
-                warn!(error = %e, "Deserialize client message failed");
-                continue;
-            }
-        };
+            let msg: ClientMessage = match rmp_serde::from_slice(&frame) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(error = %e, "Deserialize client message failed");
+                    continue;
+                }
+            };
 
-        match msg {
-            ClientMessage::PlayerAction {
-                action, target, ..
-            } => {
-                debug!(?action, target = ?target, "Player action received");
-                let mut wm = wm.lock().await;
-                wm.handle_player_action(player_id, action, target).await;
-            }
-            ClientMessage::Ping { seq } => {
-                let pong = ServerMessage::Pong { seq };
-                let data = rmp_serde::to_vec(&pong)?;
-                let mut send = send_arc.lock().await;
-                write_frame(&mut *send, &data).await?;
-            }
-            ClientMessage::Logout => {
-                info!("Player logged out");
-                break;
-            }
-            _ => {
-                debug!("Unknown message type from client");
+            match msg {
+                ClientMessage::PlayerAction {
+                    seq,
+                    action,
+                    target,
+                } => {
+                    debug!(?action, target = ?target, "Player action received");
+                    let mut wm = wm.lock().await;
+                    wm.handle_player_action(player_id, seq, action, target)
+                        .await;
+                }
+                ClientMessage::Ping { seq } => {
+                    let pong = ServerMessage::Pong { seq };
+                    let data = rmp_serde::to_vec(&pong)?;
+                    let mut send = send_arc.lock().await;
+                    write_frame(&mut send, &data).await?;
+                }
+                ClientMessage::Logout => {
+                    info!("Player logged out");
+                    break;
+                }
+                _ => {
+                    debug!("Unknown message type from client");
+                }
             }
         }
+        Ok(())
     }
+    .await;
 
     // Cleanup
     let mut wm = wm.lock().await;
     wm.unregister_player(player_id).await;
+    forwarder.abort();
     info!(player_id, "Player disconnected");
     connection.close(0u32.into(), b"bye");
-    Ok(())
+    result
 }
 
 #[instrument(level = "trace")]
 async fn read_frame(recv: &mut RecvStream) -> Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
-    recv.read_exact(&mut len_buf).await
+    recv.read_exact(&mut len_buf)
+        .await
         .context("read frame length")?;
     let len = u32::from_be_bytes(len_buf) as usize;
 
@@ -207,17 +252,16 @@ async fn read_frame(recv: &mut RecvStream) -> Result<Vec<u8>> {
     }
 
     let mut buf = vec![0u8; len];
-    recv.read_exact(&mut buf).await
-        .context("read frame body")?;
+    recv.read_exact(&mut buf).await.context("read frame body")?;
     Ok(buf)
 }
 
 #[instrument(level = "trace", skip(data))]
 async fn write_frame(send: &mut SendStream, data: &[u8]) -> Result<()> {
     let len = data.len() as u32;
-    send.write_all(&len.to_be_bytes()).await
+    send.write_all(&len.to_be_bytes())
+        .await
         .context("write frame length")?;
-    send.write_all(data).await
-        .context("write frame body")?;
+    send.write_all(data).await.context("write frame body")?;
     Ok(())
 }

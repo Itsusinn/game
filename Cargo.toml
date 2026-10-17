@@ -4,6 +4,8 @@ members = [
     "protocol",
     "server",
     "client",
+    "client-core",
+    "engine",
 ]
 
 [workspace.package]

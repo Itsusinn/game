@@ -55,6 +55,10 @@ impl InputQueue {
         self.pending.len()
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &PendingAction> {
+        self.pending.iter()
+    }
+
     pub fn next_seq(&self) -> u32 {
         self.next_seq
     }
