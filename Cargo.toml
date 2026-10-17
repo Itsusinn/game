@@ -6,6 +6,7 @@ members = [
     "client",
     "client-core",
     "engine",
+    "simulation",
 ]
 
 [workspace.package]

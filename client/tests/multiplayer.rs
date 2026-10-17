@@ -4,185 +4,151 @@ use client::network_client::{
 use protocol::*;
 use server::{
     network::{make_server_endpoint, serve_endpoint},
-    world::world_manager::WorldManager,
+    voxel::VoxelWorld,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{oneshot, Mutex};
 
-async fn snapshot(recv: &mut quinn::RecvStream, seq: u32) -> ServerMessage {
+async fn snapshot(recv: &mut quinn::RecvStream, seq: u32) -> Snapshot3d {
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            let message = read_message(recv).await.unwrap();
-            if matches!(&message, ServerMessage::WorldState { seq: ack, .. } if *ack == seq) {
-                return message;
+            if let ServerMessage::World3d(s) = read_message(recv).await.unwrap() {
+                if s.seq >= seq {
+                    return s;
+                }
             }
         }
     })
     .await
-    .expect("snapshot timed out")
+    .expect("3D snapshot timed out")
 }
-
+async fn login(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream, name: &str) -> u32 {
+    write_message(
+        send,
+        &ClientMessage::Login {
+            version: PROTOCOL_VERSION,
+            player_name: name.into(),
+        },
+    )
+    .await
+    .unwrap();
+    match read_message(recv).await.unwrap() {
+        ServerMessage::Welcome3d { player_id, .. } => player_id,
+        other => panic!("expected 3D welcome, got {other:?}"),
+    }
+}
 #[tokio::test]
-async fn two_clients_login_move_acknowledge_and_disconnect_over_verified_quic() {
+async fn two_clients_receive_voxels_move_jump_chat_and_disconnect_over_verified_quic() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = endpoint.local_addr().unwrap();
-        let manager = Arc::new(Mutex::new(WorldManager::new(12345)));
+        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
         let (stop, stopped) = oneshot::channel();
         let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
             let _ = stopped.await;
         }));
-        let (_endpoint1, connection1) = connect_endpoint(address, cert.clone()).await.unwrap();
-        let (mut send1, mut recv1) = connection1.open_bi().await.unwrap();
-        write_message(
-            &mut send1,
-            &ClientMessage::Login {
-                version: PROTOCOL_VERSION,
-                player_name: "Alice".into(),
-            },
-        )
-        .await
-        .unwrap();
-        let id1 = match read_message(&mut recv1).await.unwrap() {
-            ServerMessage::LoginAccepted { player_id, .. } => player_id,
-            other => panic!("expected login, got {other:?}"),
-        };
-        let first = snapshot(&mut recv1, 0).await;
-        let (_endpoint2, connection2) = connect_endpoint(address, cert).await.unwrap();
-        let (mut send2, mut recv2) = connection2.open_bi().await.unwrap();
-        write_message(
-            &mut send2,
-            &ClientMessage::Login {
-                version: PROTOCOL_VERSION,
-                player_name: "Bob".into(),
-            },
-        )
-        .await
-        .unwrap();
-        let id2 = match read_message(&mut recv2).await.unwrap() {
-            ServerMessage::LoginAccepted { player_id, .. } => player_id,
-            other => panic!("expected login, got {other:?}"),
-        };
-        assert_ne!(id1, id2);
-        let second = snapshot(&mut recv2, 0).await;
-        if let ServerMessage::WorldState {
-            player_pos,
-            entities,
-            ..
-        } = second
-        {
-            assert!(entities
-                .iter()
-                .any(|e| e.id == id2 && e.pos == player_pos && e.is_player));
-            assert!(
-                entities.iter().any(|e| e.id == id1 && e.is_player),
-                "second player sees first player"
-            );
-        }
-        let (origin, tile, action) = match first {
-            ServerMessage::WorldState {
-                player_pos,
-                visible_tiles,
-                entities,
-                ..
-            } => {
-                let steps = [
-                    (1, 0, ActionType::MoveRight),
-                    (-1, 0, ActionType::MoveLeft),
-                    (0, 1, ActionType::MoveDown),
-                    (0, -1, ActionType::MoveUp),
-                ];
-                let (tile, action) = steps
-                    .into_iter()
-                    .find_map(|(dx, dy, action)| {
-                        let target = Coord::new(player_pos.x + dx, player_pos.y + dy);
-                        visible_tiles
-                            .iter()
-                            .find(|t| {
-                                t.pos == target
-                                    && t.tile_type == 0
-                                    && !entities.iter().any(|e| e.pos == target)
-                            })
-                            .map(|_| (target, action))
-                    })
-                    .expect("walkable neighbour");
-                (player_pos, tile, action)
+        let (_e1, c1) = connect_endpoint(address, cert.clone()).await.unwrap();
+        let (mut s1, mut r1) = c1.open_bi().await.unwrap();
+        let id1 = login(&mut s1, &mut r1, "Alice").await;
+        let mut map = game_simulation::grid::Grid::unknown();
+        let mut chunks = 0;
+        let initial = loop {
+            match read_message(&mut r1).await.unwrap() {
+                ServerMessage::Chunk3d { origin, blocks } => {
+                    assert!(map.apply_chunk(origin, &blocks));
+                    chunks += 1;
+                }
+                ServerMessage::World3d(s) => break s,
+                _ => {}
             }
-            _ => unreachable!(),
         };
-        // Bob may occupy the chosen destination. His disconnection must remove his entity.
-        write_message(&mut send2, &ClientMessage::Logout)
+        assert_eq!(chunks, 32);
+        assert!(!map.blocks.contains(&255));
+        assert!(map.solid([28, 6, 32]));
+        let (_e2, c2) = connect_endpoint(address, cert).await.unwrap();
+        let (mut s2, mut r2) = c2.open_bi().await.unwrap();
+        let id2 = login(&mut s2, &mut r2, "Bob").await;
+        let bob = snapshot(&mut r2, 0).await;
+        assert!(bob.actors.iter().any(|a| a.id == id1));
+        assert_ne!(id1, id2);
+        write_message(
+            &mut s1,
+            &ClientMessage::Input3d {
+                seq: 1,
+                input: PlayerInput {
+                    forward: 1.0,
+                    jump: true,
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let moved = snapshot(&mut r1, 1).await;
+        assert!(moved.body.position[2] < initial.body.position[2]);
+        assert!(moved.body.position[1] > initial.body.position[1] + 0.1);
+        assert!(moved.actors.iter().any(|a| a.id == id2));
+        let observed = loop {
+            let s = snapshot(&mut r2, 0).await;
+            if s.actors
+                .iter()
+                .any(|a| a.id == id1 && a.position[1] > initial.body.position[1] + 0.1)
+            {
+                break s;
+            }
+        };
+        assert_eq!(
+            observed.seq, 0,
+            "ack is per player, never the simulation tick"
+        );
+        write_message(
+            &mut s1,
+            &ClientMessage::Chat3d {
+                text: "hello in 3D".into(),
+            },
+        )
+        .await
+        .unwrap();
+        loop {
+            let s = snapshot(&mut r2, 0).await;
+            if s.log.iter().any(|e| e.text.contains("hello in 3D")) {
+                break;
+            }
+        }
+        write_message(&mut s2, &ClientMessage::Logout)
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while manager.lock().await.player_sub_world(id2).is_some() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+        loop {
+            let s = snapshot(&mut r1, 1).await;
+            if !s.actors.iter().any(|a| a.id == id2) {
+                break;
             }
-        })
-        .await
-        .unwrap();
-        write_message(
-            &mut send1,
-            &ClientMessage::PlayerAction {
-                seq: 1,
-                action,
-                target: None,
-            },
-        )
-        .await
-        .unwrap();
-        if let ServerMessage::WorldState {
-            player_pos,
-            entities,
-            ..
-        } = snapshot(&mut recv1, 1).await
-        {
-            assert_ne!(player_pos, origin);
-            assert_eq!(player_pos, tile);
-            assert!(entities.iter().any(|e| e.id == id1 && e.pos == player_pos));
-            assert!(!entities.iter().any(|e| e.id == id2));
         }
-        write_message(
-            &mut send1,
-            &ClientMessage::PlayerAction {
-                seq: 2,
-                action: ActionType::Chat {
-                    text: "hello".into(),
-                },
-                target: None,
-            },
-        )
-        .await
-        .unwrap();
-        if let ServerMessage::WorldState { message_log, .. } = snapshot(&mut recv1, 2).await {
-            assert!(message_log.iter().any(|m| m.text.contains("hello")));
-        }
-        write_message(&mut send1, &ClientMessage::Logout)
+        write_message(&mut s1, &ClientMessage::Logout)
             .await
             .unwrap();
         let _ = stop.send(());
         server.await.unwrap().unwrap();
     })
     .await
-    .expect("end-to-end test timed out");
+    .expect("3D integration test timed out");
 }
-
 #[tokio::test]
-async fn desktop_transport_delivers_snapshots_and_can_shutdown_while_reading() {
+async fn desktop_transport_delivers_3d_snapshots_and_closes_remote_session() {
     let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
     let address = endpoint.local_addr().unwrap();
+    let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
     let (stop, stopped) = oneshot::channel();
-    let manager = Arc::new(Mutex::new(WorldManager::new(12345)));
     let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
         let _ = stopped.await;
     }));
-    let mut session = QuicSession::connect(address, "adapter-test".into(), cert).unwrap();
+    let mut session = QuicSession::connect(address, "adapter".into(), cert).unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match session.poll() {
-                Some(NetworkEvent::Message(ServerMessage::WorldState { .. })) => break,
+                Some(NetworkEvent::Message(ServerMessage::World3d(_))) => break,
                 Some(NetworkEvent::Disconnected(reason)) => panic!("{reason}"),
-                _ => tokio::time::sleep(Duration::from_millis(10)).await,
+                _ => tokio::time::sleep(Duration::from_millis(5)).await,
             }
         }
     })
@@ -190,12 +156,41 @@ async fn desktop_transport_delivers_snapshots_and_can_shutdown_while_reading() {
     .unwrap();
     drop(session);
     tokio::time::timeout(Duration::from_secs(3), async {
-        while manager.lock().await.player_sub_world(1).is_some() {
+        while manager.lock().await.player_count() != 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("desktop adapter must close the remote session promptly");
+    .expect("remote session leaked");
+    let _ = stop.send(());
+    server.await.unwrap().unwrap();
+}
+#[tokio::test]
+async fn old_protocol_cannot_join_the_3d_world() {
+    let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+    let address = endpoint.local_addr().unwrap();
+    let manager = Arc::new(Mutex::new(VoxelWorld::new(1)));
+    let (stop, stopped) = oneshot::channel();
+    let server = tokio::spawn(serve_endpoint(endpoint, manager, async {
+        let _ = stopped.await;
+    }));
+    let (_endpoint, connection) = connect_endpoint(address, cert).await.unwrap();
+    let (mut send, mut recv) = connection.open_bi().await.unwrap();
+    write_message(
+        &mut send,
+        &ClientMessage::Login {
+            version: 2,
+            player_name: "old".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), read_message(&mut recv))
+            .await
+            .unwrap()
+            .is_err()
+    );
     let _ = stop.send(());
     server.await.unwrap().unwrap();
 }

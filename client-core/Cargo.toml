@@ -5,4 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+game-simulation = { path = "../simulation" }
 protocol = { path = "../protocol" }

@@ -21,4 +21,4 @@ test:
     cargo test --workspace --jobs 2
 
 web-check:
-    cargo check -p game-client-core -p game-engine --target wasm32-unknown-unknown --jobs 2
+    cargo check -p game-client-core -p game-simulation -p game-engine --target wasm32-unknown-unknown --jobs 2

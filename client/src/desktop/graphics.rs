@@ -14,7 +14,6 @@ pub(super) struct Graphics {
     pub(super) ui_renderer: egui_wgpu::Renderer,
     pub(super) ui_input: egui_winit::State,
     pub(super) ctx: egui::Context,
-    pub(super) adapter_name: String,
 }
 impl Graphics {
     pub(super) async fn new(window: Arc<Window>, capture: bool) -> Result<Self> {
@@ -28,7 +27,7 @@ impl Graphics {
                 ..Default::default()
             })
             .await?;
-        let adapter_name = adapter.get_info().name;
+        println!("3D renderer: {}", adapter.get_info().name);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("dungeon device"),
@@ -55,9 +54,18 @@ impl Graphics {
             config.usage |= wgpu::TextureUsages::COPY_SRC;
         }
         surface.configure(&device, &config);
-        let renderer = Renderer::new(&device, config.format);
+        let renderer = Renderer::new(&device, config.format, config.width, config.height);
         let ctx = egui::Context::default();
-        ctx.set_visuals(egui::Visuals::dark());
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = egui::Color32::from_rgb(31, 35, 33);
+        visuals.window_fill = egui::Color32::from_rgb(35, 39, 36);
+        visuals.extreme_bg_color = egui::Color32::from_rgb(23, 27, 25);
+        visuals.override_text_color = Some(egui::Color32::from_rgb(199, 201, 188));
+        visuals.selection.bg_fill = egui::Color32::from_rgb(81, 101, 86);
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(48, 55, 49);
+        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(65, 76, 65);
+        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(83, 97, 79);
+        ctx.set_visuals(visuals);
         let ui_input = egui_winit::State::new(
             ctx.clone(),
             egui::ViewportId::ROOT,
@@ -78,7 +86,6 @@ impl Graphics {
             ui_renderer,
             ui_input,
             ctx,
-            adapter_name,
         })
     }
     pub(super) fn resize(&mut self, width: u32, height: u32) {
@@ -87,6 +94,7 @@ impl Graphics {
         }
         self.config.width = width;
         self.config.height = height;
+        self.renderer.resize(&self.device, width, height);
         self.surface.configure(&self.device, &self.config);
     }
 }

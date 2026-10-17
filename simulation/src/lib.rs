@@ -1,0 +1,231 @@
+//! Deterministic, host-independent character movement shared by authority and prediction.
+use protocol::{Body, PlayerInput};
+pub mod grid;
+
+pub const DT: f32 = 1.0 / 30.0;
+pub const RADIUS: f32 = 0.29;
+pub const HEIGHT: f32 = 1.75;
+pub const EYE_HEIGHT: f32 = 1.58;
+pub const SPEED: f32 = 4.2;
+
+pub fn overlaps(position: [f32; 3], solid: &impl Fn([i32; 3]) -> bool) -> bool {
+    let min = [
+        position[0] - RADIUS,
+        position[1] + 0.001,
+        position[2] - RADIUS,
+    ];
+    let max = [
+        position[0] + RADIUS,
+        position[1] + HEIGHT - 0.001,
+        position[2] + RADIUS,
+    ];
+    for y in min[1].floor() as i32..=max[1].floor() as i32 {
+        for z in min[2].floor() as i32..=max[2].floor() as i32 {
+            for x in min[0].floor() as i32..=max[0].floor() as i32 {
+                if solid([x, y, z]) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+pub fn step(body: &mut Body, input: PlayerInput, solid: impl Fn([i32; 3]) -> bool) {
+    step_with_actors(body, input, solid, &[]);
+}
+
+pub fn step_with_actors(
+    body: &mut Body,
+    input: PlayerInput,
+    solid: impl Fn([i32; 3]) -> bool,
+    actors: &[[f32; 3]],
+) {
+    let blocked = |position: [f32; 3]| {
+        overlaps(position, &solid)
+            || actors.iter().any(|other| {
+                (position[0] - other[0]).abs() < RADIUS * 2.0
+                    && (position[2] - other[2]).abs() < RADIUS * 2.0
+                    && position[1] + HEIGHT > other[1] + 0.001
+                    && position[1] < other[1] + HEIGHT - 0.001
+            })
+    };
+    if !input.valid() {
+        return;
+    }
+    let length = (input.forward * input.forward + input.strafe * input.strafe)
+        .sqrt()
+        .max(1.0);
+    let (sin, cos) = input.yaw.sin_cos();
+    body.velocity[0] = (sin * input.forward + cos * input.strafe) / length * SPEED;
+    body.velocity[2] = (-cos * input.forward + sin * input.strafe) / length * SPEED;
+    if input.jump && body.grounded {
+        body.velocity[1] = 8.2;
+    }
+    body.velocity[1] = (body.velocity[1] - 23.0 * DT).max(-20.0);
+    body.grounded = false;
+    // Substeps cap displacement, preventing thin-wall tunnelling while falling.
+    for axis in [0, 2, 1] {
+        let delta = body.velocity[axis] * DT;
+        let count = (delta.abs() / 0.08).ceil().max(1.0) as usize;
+        for _ in 0..count {
+            let start = body.position[axis];
+            body.position[axis] += delta / count as f32;
+            if blocked(body.position) {
+                let end = body.position[axis];
+                let mut lo = 0.0;
+                let mut hi = 1.0;
+                for _ in 0..12 {
+                    let mid = (lo + hi) * 0.5;
+                    body.position[axis] = start + (end - start) * mid;
+                    if blocked(body.position) {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                body.position[axis] = start + (end - start) * lo;
+                if axis == 1 && delta < 0.0 {
+                    body.grounded = true;
+                }
+                body.velocity[axis] = 0.0;
+                break;
+            }
+        }
+    }
+}
+
+pub fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+pub fn clear_line(a: [f32; 3], b: [f32; 3], solid: impl Fn([i32; 3]) -> bool) -> bool {
+    let steps = (distance(a, b) / 0.08).ceil().max(1.0) as usize;
+    (1..steps).all(|i| {
+        let t = i as f32 / steps as f32;
+        let p = std::array::from_fn(|j| (a[j] + (b[j] - a[j]) * t).floor() as i32);
+        !solid(p)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn ground(p: [i32; 3]) -> bool {
+        p[1] < 0
+    }
+    fn body() -> Body {
+        Body {
+            position: [0.5, 0.0, 0.5],
+            grounded: true,
+            ..Body::default()
+        }
+    }
+    #[test]
+    fn continuous_motion_and_diagonal_speed_are_bounded() {
+        let mut a = body();
+        let mut b = body();
+        for _ in 0..30 {
+            step(
+                &mut a,
+                PlayerInput {
+                    forward: 1.0,
+                    ..Default::default()
+                },
+                ground,
+            );
+            step(
+                &mut b,
+                PlayerInput {
+                    forward: 1.0,
+                    strafe: 1.0,
+                    ..Default::default()
+                },
+                ground,
+            );
+        }
+        assert!((distance(a.position, body().position) - SPEED).abs() < 0.01);
+        assert!(
+            (distance(a.position, body().position) - distance(b.position, body().position)).abs()
+                < 0.01
+        );
+    }
+    #[test]
+    fn jump_lands_and_ceiling_and_wall_block_motion() {
+        let mut b = body();
+        step(
+            &mut b,
+            PlayerInput {
+                jump: true,
+                ..Default::default()
+            },
+            ground,
+        );
+        let mut peak = b.position[1];
+        for _ in 0..90 {
+            step(&mut b, PlayerInput::default(), ground);
+            peak = peak.max(b.position[1]);
+        }
+        assert!(peak > 1.1);
+        assert!(b.grounded);
+        assert!(b.position[1].abs() < 0.01);
+        for _ in 0..60 {
+            step(
+                &mut b,
+                PlayerInput {
+                    strafe: 1.0,
+                    jump: true,
+                    ..Default::default()
+                },
+                |p| ground(p) || p[0] >= 2 || p[1] >= 2,
+            );
+        }
+        assert!(b.position[0] < 1.72);
+        assert!(b.position[1] < 0.26);
+    }
+    #[test]
+    fn invalid_input_and_occluded_attacks_are_rejected() {
+        let mut b = body();
+        let old = b;
+        step(
+            &mut b,
+            PlayerInput {
+                yaw: f32::NAN,
+                ..Default::default()
+            },
+            ground,
+        );
+        assert_eq!(b, old);
+        assert!(!clear_line([0.5, 1.0, 0.5], [3.5, 1.0, 0.5], |p| p[0] == 2));
+    }
+    #[test]
+    fn characters_cannot_walk_through_each_other_or_world_bounds() {
+        let mut b = body();
+        for _ in 0..60 {
+            step_with_actors(
+                &mut b,
+                PlayerInput {
+                    strafe: 1.0,
+                    ..Default::default()
+                },
+                ground,
+                &[[2.0, 0.0, 0.5]],
+            );
+        }
+        assert!(b.position[0] < 1.43);
+        let grid = grid::Grid::empty();
+        b.position = [0.5, 10.0, 0.5];
+        for _ in 0..60 {
+            step(
+                &mut b,
+                PlayerInput {
+                    strafe: -1.0,
+                    ..Default::default()
+                },
+                |p| grid.solid(p),
+            );
+        }
+        assert!(b.position[0] >= RADIUS - 0.001);
+        assert!(b.position[1] >= -0.002);
+    }
+}

@@ -13,6 +13,8 @@ pub enum NetworkEvent {
 pub trait Transport {
     fn send(&self, message: ClientMessage) -> Result<(), String>;
     fn poll(&mut self) -> Option<NetworkEvent>;
+    /// Final application shutdown, after the UI event loop has already exited.
+    fn shutdown(&mut self) {}
 }
 
 pub struct QuicSession {
@@ -73,17 +75,25 @@ impl Transport for QuicSession {
     fn poll(&mut self) -> Option<NetworkEvent> {
         self.incoming.try_recv().ok()
     }
+    fn shutdown(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        self.incoming.close();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 impl Drop for QuicSession {
     fn drop(&mut self) {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
-        // Wake a worker waiting to deliver a final message before joining it.
+        // Wake a worker waiting to deliver a final message. The worker owns its
+        // runtime and finishes asynchronously; never join it on the UI thread.
         self.incoming.close();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        self.worker.take();
     }
 }
 

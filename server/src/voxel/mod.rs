@@ -1,0 +1,591 @@
+mod terrain;
+use anyhow::{Context, Result};
+use game_simulation::{clear_line, distance, grid::Grid, overlaps, step_with_actors};
+use protocol::*;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::Path,
+};
+use tokio::sync::mpsc;
+
+struct Player {
+    body: Body,
+    hp: i32,
+    yaw: f32,
+    last_seq: u32,
+    received: u32,
+    inbox: VecDeque<(u32, PlayerInput)>,
+    tx: mpsc::Sender<ServerMessage>,
+    inventory: Vec<InventoryEntry>,
+    attack_tick: u64,
+}
+struct Npc {
+    actor: Actor3d,
+    body: Body,
+    attack_tick: u64,
+}
+
+pub struct VoxelWorld {
+    pub world_seed: u64,
+    pub terrain: Grid,
+    players: HashMap<u32, Player>,
+    npcs: hecs::World,
+    items: Vec<GroundItem3d>,
+    log: Vec<LogEntry>,
+    next_id: u32,
+    tick: u64,
+}
+impl VoxelWorld {
+    pub fn new(seed: u64) -> Self {
+        Self::with_map(seed, terrain::generate(seed))
+    }
+    fn with_map(seed: u64, terrain: Grid) -> Self {
+        let mut npcs = hecs::World::new();
+        for (i, p) in [[31.5, 7.0, 21.5], [41.5, 7.0, 27.5], [19.5, 7.0, 42.5]]
+            .into_iter()
+            .enumerate()
+        {
+            npcs.spawn((Npc {
+                actor: Actor3d {
+                    id: (1 << 31) + i as u32,
+                    kind: 1,
+                    position: p,
+                    yaw: 0.0,
+                    hp: 30,
+                    max_hp: 30,
+                },
+                body: Body {
+                    position: p,
+                    ..Default::default()
+                },
+                attack_tick: 0,
+            },));
+        }
+        Self {
+            world_seed: seed,
+            terrain,
+            players: HashMap::new(),
+            npcs,
+            items: vec![GroundItem3d {
+                id: 1,
+                position: [30.5, 7.0, 30.5],
+                name: "Field supplies".into(),
+            }],
+            log: vec![],
+            next_id: 1,
+            tick: 0,
+        }
+    }
+    pub fn player_count(&self) -> usize {
+        self.players.len()
+    }
+    pub fn allocate_player_id(&mut self) -> u32 {
+        let id = self.next_id;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .filter(|id| *id < 1 << 31)
+            .expect("player ID exhausted");
+        id
+    }
+    pub fn register_player(&mut self, id: u32, tx: mpsc::Sender<ServerMessage>) -> Result<()> {
+        anyhow::ensure!(self.players.len() < 16, "world is full");
+        let position = self
+            .spawn_position(id)
+            .context("no unoccupied spawn position")?;
+        for origin in Grid::origins() {
+            tx.try_send(ServerMessage::Chunk3d {
+                origin,
+                blocks: self.terrain.chunk(origin),
+            })
+            .context("initial map queue full")?;
+        }
+        self.players.insert(
+            id,
+            Player {
+                body: Body {
+                    position,
+                    grounded: true,
+                    ..Default::default()
+                },
+                hp: 100,
+                yaw: 0.0,
+                last_seq: 0,
+                received: 0,
+                inbox: VecDeque::new(),
+                tx,
+                inventory: vec![],
+                attack_tick: 0,
+            },
+        );
+        Ok(())
+    }
+    pub fn unregister_player(&mut self, id: u32) {
+        self.players.remove(&id);
+    }
+    fn spawn_position(&self, exclude: u32) -> Option<[f32; 3]> {
+        (0..16)
+            .map(|slot| {
+                [
+                    28.5 + (slot % 4) as f32 * 2.0,
+                    7.0,
+                    32.5 + (slot / 4) as f32 * 2.0,
+                ]
+            })
+            .find(|&position| {
+                !overlaps(position, &|p| self.terrain.solid(p))
+                    && self
+                        .players
+                        .iter()
+                        .all(|(&id, p)| id == exclude || distance(p.body.position, position) > 1.0)
+                    && self
+                        .npcs
+                        .query::<&Npc>()
+                        .iter()
+                        .all(|n| distance(n.body.position, position) > 1.0)
+            })
+    }
+    pub fn input(&mut self, id: u32, seq: u32, input: PlayerInput) -> Result<()> {
+        let p = self.players.get_mut(&id).context("unknown player")?;
+        anyhow::ensure!(input.valid(), "invalid movement input");
+        anyhow::ensure!(
+            seq == p
+                .received
+                .checked_add(1)
+                .context("input sequence exhausted")?,
+            "out-of-order input"
+        );
+        anyhow::ensure!(
+            p.inbox.len() < 16,
+            "client sends inputs faster than simulation"
+        );
+        p.received = seq;
+        p.inbox.push_back((seq, input));
+        Ok(())
+    }
+    pub fn chat(&mut self, id: u32, text: String) -> Result<()> {
+        anyhow::ensure!(text.len() <= 512, "chat too long");
+        if self.players.contains_key(&id) {
+            self.note(format!("Player {id}: {}", text.trim()));
+        }
+        Ok(())
+    }
+    fn note(&mut self, text: String) {
+        self.log.push(LogEntry {
+            text,
+            color: 0xBEC9B2,
+            turn: self.tick,
+        });
+        if self.log.len() > 8 {
+            self.log.remove(0);
+        }
+    }
+    pub fn tick(&mut self) {
+        self.tick += 1;
+        let mut actions = Vec::new();
+        let mut occupants: Vec<_> = self
+            .players
+            .iter()
+            .map(|(&id, p)| (id, p.body.position))
+            .collect();
+        occupants.extend(
+            self.npcs
+                .query::<&Npc>()
+                .iter()
+                .map(|n| (n.actor.id, n.body.position)),
+        );
+        let mut ids: Vec<_> = self.players.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let obstacles: Vec<_> = occupants
+                .iter()
+                .filter(|a| a.0 != id)
+                .map(|a| a.1)
+                .collect();
+            let p = self.players.get_mut(&id).unwrap();
+            let input = if let Some((seq, input)) = p.inbox.pop_front() {
+                p.last_seq = seq;
+                input
+            } else {
+                PlayerInput {
+                    yaw: p.yaw,
+                    ..PlayerInput::default()
+                }
+            };
+            p.yaw = input.yaw;
+            step_with_actors(&mut p.body, input, |b| self.terrain.solid(b), &obstacles);
+            if let Some(a) = occupants.iter_mut().find(|a| a.0 == id) {
+                a.1 = p.body.position;
+            }
+            if input.attack || input.pickup {
+                actions.push((id, input));
+            }
+        }
+        for (id, input) in actions {
+            self.action(id, input);
+        }
+        for npc in self.npcs.query_mut::<&mut Npc>() {
+            let target = self
+                .players
+                .iter()
+                .filter(|(_, p)| p.hp > 0)
+                .min_by(|a, b| {
+                    distance(a.1.body.position, npc.body.position)
+                        .total_cmp(&distance(b.1.body.position, npc.body.position))
+                });
+            let mut input = PlayerInput::default();
+            if let Some((&id, p)) = target {
+                let d = distance(p.body.position, npc.body.position);
+                let a = [
+                    npc.body.position[0],
+                    npc.body.position[1] + 1.0,
+                    npc.body.position[2],
+                ];
+                let b = [
+                    p.body.position[0],
+                    p.body.position[1] + 1.0,
+                    p.body.position[2],
+                ];
+                if d < 13.0 && clear_line(a, b, |b| self.terrain.solid(b)) {
+                    input.yaw = (p.body.position[0] - npc.body.position[0])
+                        .atan2(npc.body.position[2] - p.body.position[2]);
+                    if d > 1.25 {
+                        input.forward = 0.32;
+                    }
+                    if d < 1.65 && self.tick >= npc.attack_tick + 30 {
+                        npc.attack_tick = self.tick;
+                        let p = self.players.get_mut(&id).unwrap();
+                        p.hp = (p.hp - 4).max(0);
+                    }
+                }
+            }
+            let obstacles: Vec<_> = occupants
+                .iter()
+                .filter(|a| a.0 != npc.actor.id)
+                .map(|a| a.1)
+                .collect();
+            step_with_actors(&mut npc.body, input, |b| self.terrain.solid(b), &obstacles);
+            if let Some(a) = occupants.iter_mut().find(|a| a.0 == npc.actor.id) {
+                a.1 = npc.body.position;
+            }
+            npc.actor.position = npc.body.position;
+            npc.actor.yaw = input.yaw;
+        }
+        let dead: Vec<_> = self
+            .players
+            .iter()
+            .filter(|(_, p)| p.hp == 0 || p.body.position[1] < -2.0)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in dead {
+            if let Some(position) = self.spawn_position(id) {
+                let p = self.players.get_mut(&id).unwrap();
+                p.body = Body {
+                    position,
+                    grounded: true,
+                    ..Default::default()
+                };
+                p.hp = 100;
+            }
+        }
+        let mut actors: Vec<_> = self
+            .players
+            .iter()
+            .map(|(&id, p)| Actor3d {
+                id,
+                kind: 0,
+                position: p.body.position,
+                yaw: p.yaw,
+                hp: p.hp,
+                max_hp: 100,
+            })
+            .collect();
+        actors.extend(self.npcs.query::<&Npc>().iter().map(|n| n.actor.clone()));
+        actors.sort_by_key(|a| a.id);
+        let mut slow = Vec::new();
+        for (&id, p) in &self.players {
+            if p.tx
+                .try_send(ServerMessage::World3d(Snapshot3d {
+                    seq: p.last_seq,
+                    body: p.body,
+                    actors: actors.clone(),
+                    items: self.items.clone(),
+                    hp: p.hp,
+                    inventory: p.inventory.clone(),
+                    log: self.log.clone(),
+                }))
+                .is_err()
+            {
+                slow.push(id);
+            }
+        }
+        for id in slow {
+            self.players.remove(&id);
+        }
+    }
+    fn action(&mut self, id: u32, input: PlayerInput) {
+        let Some(p) = self.players.get(&id) else {
+            return;
+        };
+        let pos = p.body.position;
+        if input.pickup {
+            if let Some(i) = self.items.iter().position(|item| {
+                distance(item.position, pos) < 2.0
+                    && clear_line(
+                        [pos[0], pos[1] + 0.5, pos[2]],
+                        [item.position[0], item.position[1] + 0.2, item.position[2]],
+                        |b| self.terrain.solid(b),
+                    )
+            }) {
+                let item = self.items.remove(i);
+                self.players
+                    .get_mut(&id)
+                    .unwrap()
+                    .inventory
+                    .push(InventoryEntry {
+                        name: item.name.clone(),
+                        quantity: 1,
+                    });
+                self.note(format!("Player {id} picked up {}.", item.name));
+            }
+        }
+        if !input.attack || self.tick < self.players[&id].attack_tick + 12 {
+            return;
+        }
+        self.players.get_mut(&id).unwrap().attack_tick = self.tick;
+        let eye = [pos[0], pos[1] + game_simulation::EYE_HEIGHT, pos[2]];
+        let direction = [
+            input.yaw.sin() * input.pitch.cos(),
+            input.pitch.sin(),
+            -input.yaw.cos() * input.pitch.cos(),
+        ];
+        let target = self
+            .npcs
+            .query::<&Npc>()
+            .iter()
+            .filter_map(|n| {
+                let center = [
+                    n.body.position[0],
+                    n.body.position[1] + 1.0,
+                    n.body.position[2],
+                ];
+                let d = distance(eye, center);
+                let dot = (0..3)
+                    .map(|i| (center[i] - eye[i]) * direction[i])
+                    .sum::<f32>()
+                    / d.max(0.001);
+                (d < 2.8 && dot > 0.65 && clear_line(eye, center, |b| self.terrain.solid(b)))
+                    .then_some((n.actor.id, d))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|a| a.0);
+        if let Some(target) = target {
+            let mut killed = None;
+            for (handle, n) in self.npcs.query_mut::<(hecs::Entity, &mut Npc)>() {
+                if n.actor.id == target {
+                    n.actor.hp -= 10;
+                    if n.actor.hp <= 0 {
+                        killed = Some(handle);
+                    }
+                }
+            }
+            if let Some(handle) = killed {
+                let _ = self.npcs.despawn(handle);
+            }
+            self.note(format!(
+                "Player {id} hit a zombie for 10{}",
+                if killed.is_some() {
+                    " (defeated)."
+                } else {
+                    "."
+                }
+            ));
+        }
+    }
+    pub fn load(path: &Path) -> Result<Self> {
+        let bytes = std::fs::read(path).context("read 3D world")?;
+        anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
+        let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
+        anyhow::ensure!(
+            saved.version == 1 && saved.size == WORLD_SIZE,
+            "unsupported 3D save version/dimensions"
+        );
+        anyhow::ensure!(
+            saved.blocks.len() == (64 * 32 * 64) && saved.blocks.iter().all(|b| *b <= PLANK),
+            "invalid voxel data"
+        );
+        Ok(Self::with_map(
+            saved.seed,
+            Grid {
+                blocks: saved.blocks,
+            },
+        ))
+    }
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        let saved = Save {
+            version: 1,
+            size: WORLD_SIZE,
+            seed: self.world_seed,
+            blocks: self.terrain.blocks.clone(),
+        };
+        let mut data = b"DNG3D001".to_vec();
+        data.extend(rmp_serde::to_vec(&saved)?);
+        let temp = path.with_extension("tmp");
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        f.write_all(&data)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(temp, path).context("replace 3D save")?;
+        Ok(())
+    }
+}
+#[derive(Serialize, Deserialize)]
+struct Save {
+    version: u32,
+    size: [i32; 3],
+    seed: u64,
+    blocks: Vec<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn melee_requires_reach_facing_line_of_sight_and_cooldown() {
+        let mut w = VoxelWorld::new(1);
+        let (tx, _rx) = mpsc::channel(64);
+        w.register_player(1, tx).unwrap();
+        w.npcs.clear();
+        let position = [28.5, 7.0, 30.9];
+        let npc = w.npcs.spawn((Npc {
+            actor: Actor3d {
+                id: 1 << 31,
+                kind: 1,
+                position,
+                yaw: 0.0,
+                hp: 30,
+                max_hp: 30,
+            },
+            body: Body {
+                position,
+                ..Default::default()
+            },
+            attack_tick: 0,
+        },));
+        let attack = PlayerInput {
+            attack: true,
+            ..Default::default()
+        };
+        w.tick = 100;
+        w.terrain.set([28, 8, 31], STONE);
+        w.action(1, attack);
+        assert_eq!(w.npcs.get::<&Npc>(npc).unwrap().actor.hp, 30);
+        w.terrain.set([28, 8, 31], AIR);
+        w.tick += 12;
+        w.action(
+            1,
+            PlayerInput {
+                yaw: std::f32::consts::PI,
+                ..attack
+            },
+        );
+        assert_eq!(w.npcs.get::<&Npc>(npc).unwrap().actor.hp, 30);
+        w.tick += 12;
+        w.action(1, attack);
+        assert_eq!(w.npcs.get::<&Npc>(npc).unwrap().actor.hp, 20);
+        w.action(1, attack);
+        assert_eq!(w.npcs.get::<&Npc>(npc).unwrap().actor.hp, 20);
+        w.tick += 12;
+        w.action(1, attack);
+        w.tick += 12;
+        w.action(1, attack);
+        assert!(!w.npcs.contains(npc));
+    }
+    #[test]
+    fn pickup_is_authoritative_and_reconnect_uses_a_free_spawn() {
+        let mut w = VoxelWorld::new(1);
+        let (tx1, _rx1) = mpsc::channel(64);
+        let (tx2, _rx2) = mpsc::channel(64);
+        let (tx3, _rx3) = mpsc::channel(64);
+        w.register_player(1, tx1).unwrap();
+        w.register_player(2, tx2).unwrap();
+        w.unregister_player(1);
+        w.register_player(3, tx3).unwrap();
+        assert!(distance(w.players[&2].body.position, w.players[&3].body.position) > 1.0);
+        w.items[0].position = w.players[&3].body.position;
+        for _ in 0..2 {
+            w.action(
+                3,
+                PlayerInput {
+                    pickup: true,
+                    ..Default::default()
+                },
+            );
+        }
+        assert!(w.items.is_empty());
+        assert_eq!(w.players[&3].inventory.len(), 1);
+    }
+    #[test]
+    fn slow_clients_are_removed_without_blocking_the_tick() {
+        let mut w = VoxelWorld::new(1);
+        let (tx, _rx) = mpsc::channel(32);
+        w.register_player(1, tx).unwrap();
+        w.tick();
+        assert_eq!(w.player_count(), 0);
+    }
+    #[test]
+    fn save_roundtrip_rejects_legacy_without_touching_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("world.bin");
+        let w = VoxelWorld::new(42);
+        w.save(&path).unwrap();
+        let loaded = VoxelWorld::load(&path).unwrap();
+        assert_eq!(loaded.terrain.blocks, w.terrain.blocks);
+        loaded.save(&path).unwrap();
+        std::fs::write(&path, b"legacy").unwrap();
+        assert!(VoxelWorld::load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"legacy");
+    }
+    #[test]
+    fn server_consumes_at_most_one_input_per_tick_and_acks_execution() {
+        let mut w = VoxelWorld::new(42);
+        let (tx, mut rx) = mpsc::channel(64);
+        w.register_player(1, tx).unwrap();
+        let start = w.players[&1].body.position;
+        for seq in 1..=4 {
+            w.input(
+                1,
+                seq,
+                PlayerInput {
+                    forward: 1.0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(w.players[&1].last_seq, 0);
+        w.tick();
+        assert_eq!(w.players[&1].last_seq, 1);
+        assert!(distance(start, w.players[&1].body.position) < 0.15);
+        while rx.try_recv().is_ok() {}
+        assert!(w
+            .input(
+                1,
+                5,
+                PlayerInput {
+                    forward: 2.0,
+                    ..Default::default()
+                }
+            )
+            .is_err());
+        assert!(w.input(1, 4, PlayerInput::default()).is_err());
+    }
+}

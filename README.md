@@ -1,82 +1,97 @@
-# Dungeon — Rust / WebGPU
+# Dungeon 3D — Rust / WebGPU
 
-桌面优先的 2D 多人地牢游戏。使用 Rust + wgpu/WGSL 自研渲染器、winit 窗口与输入、egui 界面、hecs ECS 和 Quinn/QUIC。无需安装 Godot。
+桌面优先的第一人称多人方块游戏。沿用 Rust + wgpu/WGSL 自研渲染器、winit、egui、hecs 和经过证书验证的 Quinn/QUIC。当前入口已经使用三维世界、连续移动、重力、跳跃与碰撞，不再运行原来的二维格子玩法。
 
 ## 运行
 
-从仓库根目录运行，使用当前 Rust stable 工具链：
+使用 `rust-toolchain.toml` 指定的 stable 工具链。在仓库根目录分别启动：
 
 ```sh
 cargo run -p server
-```
-
-再打开一个终端：
-
-```sh
 cargo run -p client -- --connect
 ```
 
-也可以不传 `--connect`，在连接菜单中填写地址、名字和证书路径。启动多个客户端即可进行本机多人联机。
+客户端不带 `--connect` 时显示连接菜单，可填写地址、昵称和证书。支持同服多个客户端，当前最多 16 人。
 
 ```sh
 cargo run -p client -- --demo
 ```
 
-`--demo` 是独立的渲染展示，不启动模拟或服务器。退出展示后连接服务器即可游玩。
+`--demo` 是可移动、可跳跃的离线三维漫游场景，用同一套碰撞规则；其中的角色是静态展示。战斗、拾取、聊天和其他玩家需要连接服务器。
 
 ## 操作
 
+先单击世界区域捕获鼠标，按 Esc 释放鼠标。失去窗口焦点或打开背包时自动释放并清空按键。
+
 | 输入 | 动作 |
 |---|---|
-| WASD / 方向键 | 移动 |
-| Q / E / Z / C，数字键盘 | 斜向移动 |
-| Space / `.` | 等待 |
-| F | 攻击相邻敌人 |
-| G | 拾取脚下物品 |
-| Tab | 展开或收起背包 |
-| 滚轮 / 侧栏滑块 | 缩放 |
-| 聊天输入框 + Enter | 同区域聊天 |
+| 鼠标 | 第一人称转向、抬头与低头 |
+| WASD / 方向键 | 相对朝向连续移动 |
+| Space | 跳跃；需要落地后才能再次起跳 |
+| 左键 / F | 面向目标的近战攻击 |
+| G | 拾取附近物品 |
+| Tab | 打开 / 关闭背包、日志和聊天 |
+| Esc | 释放鼠标 |
+| 滚轮 / 侧栏滑块 | 调整视野角度 |
+| 聊天框 + Enter | 发送聊天 |
 
-输入框获得焦点时，打字不会触发移动。服务器继续保留原有 200ms AI 更新节奏；它不是所有玩家共同等待的严格回合制。
+菜单和聊天不触发移动。联机世界不会因为本地打开菜单而暂停。受击生命值归零后在空闲出生点复活，当前携带物品保留。
 
-## 网络和存档
+## 当前 3D 范围
 
-- 默认监听 `127.0.0.1:9876`。局域网使用环境变量 `CDDA_BIND=0.0.0.0:9876`，客户端填写服务器的局域网 IP。
-- 服务器每次启动生成自签名 TLS 证书，写入 `save/server.cert.der`。客户端使用这个文件验证服务器，**不跳过证书校验**。远程玩家需要取得服务器本次启动的证书文件，使用 `--cert PATH`。
-- `CDDA_CERT_PATH` 可调整证书输出位置；证书里的 `localhost` 是固定 TLS 名称，连接地址独立指定。
-- `CDDA_SAVE_PATH` 默认为 `save/world.bin`。Ctrl+C 正常退出会保存；损坏的现有存档会阻止启动，避免静默覆盖。
-- 原有 MessagePack 地图存档格式保持兼容，现在会恢复地图及探索状态，并保留未访问区域。NPC、地面物品仍按种子生成；玩家账号、背包和战斗状态**尚不跨服务器重启持久化**。跨区域转移会保留当前玩家状态。
-- 协议版本为 2，增加最大生命值和背包字段，旧客户端不能连接。
+- 64×32×64 方块世界，Y 轴向上，按 16×16×16 区块传输。世界有边界，不是无限生成世界。
+- 起伏地形、草地、树木、石屋遗迹、窗口、屋顶、可跳上的台阶和平台，以及有实体池底的浅水池。未实现游泳。
+- 透视相机、深度遮挡、隐藏方块面剔除、程序化像素材质、方向光照和距离雾。地形网格只在地图变化时重建；角色单独更新。
+- 连续移动与重力在客户端、服务端共用 30 Hz 固定步长规则，处理地面、墙体、头顶、实体碰撞和未知区域阻挡。
+- 服务端权威近战、敌人追踪和攻击、拾取、背包、聊天、复活和多人同步。敌人使用直接追踪和视线判定，尚无跨高度的完整寻路。
+- 按确认范围，本轮不包含挖掘、放置方块、合成、动态流体、昼夜系统或完整账号存档。原先的饥饿、口渴等静态 HUD 已移除，避免展示尚未接通的玩法。
 
-客户端参数：`--server IP:PORT`、`--cert FILE.der`、`--name NAME`、`--connect`、`--demo`、`--capture FILE.png`。截图模式在世界数据到达后保存一帧并退出；30 秒内未获得世界数据则失败。`CDDA_RUN_SECONDS` 可让服务器定时正常退出，供自动验证使用。
+## 网络与存档
+
+- 默认监听 `127.0.0.1:9876`；局域网可设置 `CDDA_BIND=0.0.0.0:9876`。
+- 服务端每次启动生成 TLS 证书，默认写入 `save/server.cert.der`，可用 `CDDA_CERT_PATH` 改路径。客户端必须使用服务端本次生成的证书，不跳过验证；远程玩家通过 `--cert FILE.der` 指定证书。
+- 协议版本为 **3**，增加三维区块、浮点坐标、速度、落地状态和连续控制输入。旧版客户端不能加入。
+- `World3d.seq` 是该玩家最后**执行**的输入序号。客户端只有在有界发送队列接受输入后才预测；收到快照先应用权威位置与速度，再重放未确认输入。服务端每 tick 最多消费每人一条输入，拒绝无效数值、乱序和超量积压。
+- 慢客户端的队列不能阻塞广播；网络读取任务持续拥有接收流，不会被 UI 的发送取消。客户端每帧处理网络消息数量有上限。
+- 新默认存档为 **`save/world3d.bin`**，以 `DNG3D001` 标记并包含格式版本、尺寸、种子和方块数据。Ctrl+C 正常退出时先写临时文件，再替换目标。
+- 原来的 `save/world.bin` **不会自动迁移或覆盖**。把二维文件传给 `CDDA_SAVE_PATH` 会明确报错并停止启动；若要继续保留旧二维地图，先保留原文件，再使用新的三维存档路径。当前没有二维到三维迁移命令。
+- 当前仅持久化三维地图；玩家账号、生命、背包、NPC 与物品状态不跨重启保存。加载失败会阻止启动，不能静默生成新世界覆盖存档。
+
+客户端参数：`--server IP:PORT`、`--cert FILE.der`、`--name NAME`、`--connect`、`--demo`、`--capture FILE.png`、`--fov 55..100`（默认 72°）、`--yaw DEGREES`（用于选择截图朝向）。旧的二维 `--zoom` 参数已移除。
+
+`--capture` 在完整区块数据和玩家状态到达后截图并退出，30 秒未就绪则报错。`CDDA_RUN_SECONDS` 可使测试服务器定时正常退出。
 
 ## 模块边界
 
-| Crate | 职责 |
+| Crate / 目录 | 职责 |
 |---|---|
-| `protocol` | 消息类型、坐标、协议版本 |
-| `game-client-core`（`client-core/`） | 平台无关的状态、探索缓存、输入队列、预测与确认后重放 |
-| `game-engine`（`engine/`） | 相机、视口裁剪判定、实例化图元、WGSL 管线和 GPU 缓冲区 |
-| `client` | 桌面宿主、egui UI、输入映射、QUIC 传输适配器和画面组装 |
-| `server` | 权威模拟、hecs 组件、AI/FOV、分区管理、QUIC 会话、地图存储 |
+| `protocol/` | 三维消息、区块与角色共享数据、协议版本 |
+| `simulation/` (`game-simulation`) | 平台无关的体素网格查询、固定步长运动、AABB 碰撞、视线检测；由服务端和客户端共用 |
+| `client-core/voxel` | 三维地图缓存、输入队列、预测与权威状态协调 |
+| `engine/` | 三维相机、通用三角网格、GPU 缓冲、深度与着色器，不依赖游戏协议 |
+| `client/` | 桌面宿主、第一人称输入、egui、QUIC 适配器；`scene` 将方块和角色转换为网格 |
+| `server/voxel` | 权威 3D 世界、地形生成、hecs NPC、战斗、快照与带版本的地图存储 |
 
-`engine` 不依赖窗口、网络或游戏协议；`client-core` 不依赖 GPU、Tokio 或桌面 API。未来浏览器宿主可复用两者，但仍需实现浏览器事件循环和 WebTransport/WebSocket 适配，当前没有可直接部署的浏览器客户端。
+旧二维世界、存档读取和客户端状态模块已移除，当前只保留三维实现；旧存档文件仍按上述策略保留，不提供自动迁移。浏览器仍没有窗口宿主与网络适配器；WASM 检查通过不代表浏览器游戏可运行。
 
 ## 验证
 
 ```sh
-cargo fmt --all -- --check
-cargo check --workspace --all-targets --jobs 2
-cargo test --workspace --jobs 2
-cargo clippy --workspace --all-targets --jobs 2 -- -D warnings
-cargo check -p game-client-core -p game-engine --target wasm32-unknown-unknown --jobs 2
-cargo run -p client -- --demo --capture target/demo.png
+just check
+just test
+just build
+just web-check
+cargo run -p client -- --demo --capture target/voxel-demo.png
 ```
 
-跨平台检查需要先安装 `wasm32-unknown-unknown` target。图形截图需要真实图形会话和可用 GPU，常规单元测试与网络集成测试不依赖 GPU。
+`just check` 包含格式和严格 Clippy；大型 Cargo 操作使用 `--jobs 2` 串行运行。WASM 检查覆盖核心、共享模拟和渲染器，需要安装 `wasm32-unknown-unknown` target。
 
-安装了 `just` 时可使用 `just server`、`just client`、`just demo`、`just check`、`just test`、`just build`。
+Windows 若 `just` 找不到默认 shell，可执行 `just --shell powershell --clear-shell-args --shell-arg=-NoProfile --shell-arg=-Command check`（其他 recipe 同理）。GPU 截图需要实际图形会话。
 
-## 当前范围
+真实 QUIC 集成测试位于 `client/tests/multiplayer.rs`，覆盖两客户端区块传输、连续移动和跳跃、逐玩家输入确认、聊天、断开释放与旧协议拒绝。验证运行使用独立端口、`target/` 下的存档和证书，不能用真实 `save/` 做破坏性测试。
 
-已接通移动、近战、拾取与背包显示、聊天、多人可见、区域转移、地图存储和加载。原项目中的远程攻击、物品使用/丢弃、合成等协议枚举或辅助模块仍未形成完整玩法，不在 UI 中提供虚假的操作入口。美术目前使用程序化图元，尚无贴图资产管线、音频系统或通用编辑器。
+## 视觉参考副本
+
+上一轮下载的 [CDDA 官方 0.I-1 图形版](https://github.com/CleverRaven/Cataclysm-DDA/releases/tag/0.I-1) 保留在 `target/reference/cdda-0.I-1/game/`（被 Git 忽略，`cargo clean` 会清除）。入口为 `cataclysm-tiles.exe`。下载包 SHA-256 为 `c0a90bfc78e5319733abea1c10ea0c0bd7e7e05a842566e9d6da90c5486e01da`。
+
+本轮三维画面采用独立生成的方块几何和程序化材质，没有复制 Minecraft、CDDA 或 Project Zomboid 的资产。
