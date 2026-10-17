@@ -41,7 +41,7 @@ cargo run -p client -- --demo
 
 - 64×32×64 方块世界，Y 轴向上，按 16×16×16 区块传输。世界有边界，不是无限生成世界。
 - 起伏地形、草地、树木、石屋遗迹、窗口、屋顶、可跳上的台阶和平台，以及有实体池底的浅水池。未实现游泳。
-- 透视相机、深度遮挡、隐藏方块面剔除、程序化像素材质、方向光照和距离雾。地形网格只在地图变化时重建；角色单独更新。
+- 透视相机、深度遮挡、隐藏方块面剔除、程序化像素材质、太阳软阴影、漫反射全局光照和距离雾。使用 kajiya 思路适配的 WGSL 射线查询、表面辐照度缓存与时域降噪；地形网格/BVH 只在地图变化时重建，角色单独更新。尚未移植完整 ReSTIR GI 或镜面反射，详见 [光照实现与限制](engine/LIGHTING.md)。
 - 连续移动与重力在客户端、服务端共用 30 Hz 固定步长规则，处理地面、墙体、头顶、实体碰撞和未知区域阻挡。
 - 服务端权威近战、敌人追踪和攻击、拾取、背包、聊天、复活和多人同步。敌人使用直接追踪和视线判定，尚无跨高度的完整寻路。
 - 按确认范围，本轮不包含挖掘、放置方块、合成、动态流体、昼夜系统或完整账号存档。原先的饥饿、口渴等静态 HUD 已移除，避免展示尚未接通的玩法。
@@ -57,9 +57,9 @@ cargo run -p client -- --demo
 - 原来的 `save/world.bin` **不会自动迁移或覆盖**。把二维文件传给 `CDDA_SAVE_PATH` 会明确报错并停止启动；若要继续保留旧二维地图，先保留原文件，再使用新的三维存档路径。当前没有二维到三维迁移命令。
 - 当前仅持久化三维地图；玩家账号、生命、背包、NPC 与物品状态不跨重启保存。加载失败会阻止启动，不能静默生成新世界覆盖存档。
 
-客户端参数：`--server IP:PORT`、`--cert FILE.der`、`--name NAME`、`--connect`、`--demo`、`--capture FILE.png`、`--fov 55..100`（默认 72°）、`--yaw DEGREES`（用于选择截图朝向）。旧的二维 `--zoom` 参数已移除。
+客户端参数：`--server IP:PORT`、`--cert FILE.der`、`--name NAME`、`--connect`、`--demo`、`--capture FILE.png`、`--capture-frames 1..4096`（默认 64）、`--lighting gi|direct|indirect|legacy`（默认 gi）、`--fov 55..100`（默认 72°）、`--yaw DEGREES`（用于选择截图朝向）。旧的二维 `--zoom` 参数已移除。
 
-`--capture` 在完整区块数据和玩家状态到达后截图并退出，30 秒未就绪则报错。`CDDA_RUN_SECONDS` 可使测试服务器定时正常退出。
+`--capture` 在完整区块数据和玩家状态到达后累计指定帧数，让光照历史收敛，再截图并退出；整体 120 秒未完成则报错。Tab 侧栏可切换 GI、仅直射、仅间接和原始光照。`CDDA_RUN_SECONDS` 可使测试服务器定时正常退出。
 
 ## 模块边界
 
@@ -68,7 +68,7 @@ cargo run -p client -- --demo
 | `protocol/` | 三维消息、区块与角色共享数据、协议版本 |
 | `simulation/` (`game-simulation`) | 平台无关的体素网格查询、固定步长运动、AABB 碰撞、视线检测；由服务端和客户端共用 |
 | `client-core/voxel` | 三维地图缓存、输入队列、预测与权威状态协调 |
-| `engine/` | 三维相机、通用三角网格、GPU 缓冲、深度与着色器，不依赖游戏协议 |
+| `engine/` | 三维相机、通用三角网格、BVH、GPU 光照缓存、深度与着色器，不依赖游戏协议 |
 | `client/` | 桌面宿主、第一人称输入、egui、QUIC 适配器；`scene` 将方块和角色转换为网格 |
 | `server/voxel` | 权威 3D 世界、地形生成、hecs NPC、战斗、快照与带版本的地图存储 |
 
@@ -82,6 +82,7 @@ just test
 just build
 just web-check
 cargo run -p client -- --demo --capture target/voxel-demo.png
+cargo test -p game-engine --test lighting_gpu --jobs 2 -- --ignored --nocapture
 ```
 
 `just check` 包含格式和严格 Clippy；大型 Cargo 操作使用 `--jobs 2` 串行运行。WASM 检查覆盖核心、共享模拟和渲染器，需要安装 `wasm32-unknown-unknown` target。

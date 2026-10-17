@@ -1,5 +1,8 @@
-//! Host-independent 3D triangle renderer: camera, mesh buffers and depth only.
+//! Host-independent 3D renderer with compute-traced diffuse global illumination.
 use bytemuck::{Pod, Zeroable};
+mod bvh;
+mod lighting;
+pub use lighting::LightingMode;
 pub use wgpu;
 
 #[derive(Clone, Copy, Debug)]
@@ -137,6 +140,8 @@ impl Buffer {
 }
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
+    gbuffer: wgpu::RenderPipeline,
+    lighting: lighting::Lighting,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
     world: Buffer,
@@ -156,44 +161,76 @@ impl Renderer {
         });
         let attrs =
             wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x3,3=>Float32x2,4=>Uint32];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("3D voxel pipeline"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attrs,
-                })],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
+        let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("camera layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
         });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("world layout"),
+            bind_group_layouts: &[Some(&camera_layout)],
+            immediate_size: 0,
+        });
+        let create_pipeline = |entry: &str, targets: &[Option<wgpu::ColorTargetState>]| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("3D voxel pipeline"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attrs,
+                    })],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets,
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let color_target = |format| {
+            Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })
+        };
+        let pipeline = create_pipeline("fs_main", &[color_target(format)]);
+        let gbuffer = create_pipeline(
+            "fs_gbuffer",
+            &[
+                color_target(wgpu::TextureFormat::Rgba32Float),
+                color_target(wgpu::TextureFormat::Rgba16Float),
+                color_target(wgpu::TextureFormat::Rgba8Unorm),
+            ],
+        );
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
             size: 64,
@@ -210,6 +247,8 @@ impl Renderer {
         });
         Self {
             pipeline,
+            gbuffer,
+            lighting: lighting::Lighting::new(device, format, width, height),
             uniform,
             bind,
             world: Buffer::new(device, 1024),
@@ -237,9 +276,14 @@ impl Renderer {
     }
     pub fn resize(&mut self, device: &wgpu::Device, w: u32, h: u32) {
         self.depth = Self::depth(device, w, h);
+        self.lighting.resize(device, w, h);
     }
     pub fn world(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, mesh: &Mesh) {
         self.world.upload(device, queue, mesh);
+        self.lighting.world(device, mesh);
+    }
+    pub fn set_lighting(&mut self, mode: LightingMode) {
+        self.lighting.set_mode(mode);
     }
     pub fn prepare(
         &mut self,
@@ -247,15 +291,85 @@ impl Renderer {
         queue: &wgpu::Queue,
         camera: &Camera,
         actors: &Mesh,
+        viewport: [f32; 4],
     ) {
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&camera.uniform()));
         self.actors.upload(device, queue, actors);
+        self.lighting
+            .prepare(device, queue, camera, actors, viewport);
     }
-    pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind, &[]);
-        self.world.draw(pass);
-        self.actors.draw(pass);
+    /// Encode world passes before the host's independent HUD pass.
+    pub fn render(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        viewport: [f32; 4],
+    ) {
+        let legacy = self.lighting.mode() == LightingMode::Legacy;
+        let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+        let attachments = if legacy {
+            vec![Some(attachment(
+                target,
+                wgpu::LoadOp::Clear(wgpu::Color {
+                    r: 0.55,
+                    g: 0.68,
+                    b: 0.72,
+                    a: 1.0,
+                }),
+            ))]
+        } else {
+            vec![
+                Some(attachment(&self.lighting.positions, clear)),
+                Some(attachment(&self.lighting.normals, clear)),
+                Some(attachment(&self.lighting.albedo, clear)),
+            ]
+        };
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(if legacy {
+                    "legacy world"
+                } else {
+                    "world G-buffer"
+                }),
+                color_attachments: &attachments,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_viewport(viewport[0], viewport[1], viewport[2], viewport[3], 0.0, 1.0);
+            pass.set_pipeline(if legacy {
+                &self.pipeline
+            } else {
+                &self.gbuffer
+            });
+            pass.set_bind_group(0, &self.bind, &[]);
+            self.world.draw(&mut pass);
+            self.actors.draw(&mut pass);
+        }
+        if !legacy {
+            self.lighting.render(device, encoder, target, viewport);
+        }
+    }
+}
+fn attachment(
+    view: &wgpu::TextureView,
+    load: wgpu::LoadOp<wgpu::Color>,
+) -> wgpu::RenderPassColorAttachment<'_> {
+    wgpu::RenderPassColorAttachment {
+        view,
+        resolve_target: None,
+        depth_slice: None,
+        ops: wgpu::Operations {
+            load,
+            store: wgpu::StoreOp::Store,
+        },
     }
 }
 #[cfg(test)]

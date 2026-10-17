@@ -1,6 +1,6 @@
 use crate::{scene, session::Session};
 use anyhow::{Context, Result};
-use game_engine::{wgpu, Camera};
+use game_engine::{wgpu, Camera, LightingMode};
 use protocol::PlayerInput;
 use std::{
     collections::HashSet,
@@ -22,6 +22,7 @@ enum Command {
     Disconnect,
     Demo,
     Chat(String),
+    Lighting(LightingMode),
 }
 struct App {
     graphics: Option<Graphics>,
@@ -31,6 +32,8 @@ struct App {
     error: Option<anyhow::Error>,
     capture: Option<String>,
     frames: u32,
+    capture_frames: u32,
+    lighting: LightingMode,
     started: Instant,
     last_frame: Instant,
     accumulator: f32,
@@ -154,6 +157,7 @@ impl App {
                     self.session.chat(text);
                     self.chat.clear();
                 }
+                Command::Lighting(mode) => self.lighting = mode,
             }
         }
         g.ui_input
@@ -170,6 +174,7 @@ impl App {
             g.renderer
                 .world(&g.device, &g.queue, &scene::terrain(&self.session.model));
             self.mesh_revision = Some(revision);
+            self.frames = 0;
         }
         let p = self.session.model.body.position;
         let camera = Camera {
@@ -179,11 +184,13 @@ impl App {
             fov: self.fov.to_radians(),
             aspect: self.viewport[2] / self.viewport[3],
         };
+        g.renderer.set_lighting(self.lighting);
         g.renderer.prepare(
             &g.device,
             &g.queue,
             &camera,
             &scene::actors(&self.session.model),
+            self.viewport,
         );
         let paint_jobs = g.ctx.tessellate(output.shapes, ppp);
         for (id, deltas) in &output.textures_delta.set {
@@ -201,44 +208,8 @@ impl App {
             g.ui_renderer
                 .update_buffers(&g.device, &g.queue, &mut encoder, &paint_jobs, &screen);
         let view = frame.texture.create_view(&Default::default());
-        {
-            let attachments = [Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.55,
-                        g: 0.68,
-                        b: 0.72,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })];
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("3D world"),
-                color_attachments: &attachments,
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &g.renderer.depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
-            pass.set_viewport(
-                self.viewport[0],
-                self.viewport[1],
-                self.viewport[2],
-                self.viewport[3],
-                0.0,
-                1.0,
-            );
-            g.renderer.render(&mut pass);
-        }
+        g.renderer
+            .render(&g.device, &mut encoder, &view, self.viewport);
         {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: &view,
@@ -263,15 +234,19 @@ impl App {
             g.ui_renderer.free_texture(id);
         }
         output.textures_delta.clear();
-        self.frames += 1;
-        let ready = self.capture.is_some() && self.frames > 5 && self.session.model.ready;
+        if self.session.model.ready {
+            self.frames = self.frames.saturating_add(1);
+        }
+        let ready = self.capture.is_some()
+            && self.frames >= self.capture_frames
+            && self.session.model.ready;
         if ready {
             capture(&g, &frame.texture, self.capture.as_deref().unwrap())?;
         }
         g.window.pre_present_notify();
         g.queue.present(frame);
         self.graphics = Some(g);
-        if self.capture.is_some() && self.started.elapsed() > Duration::from_secs(30) {
+        if self.capture.is_some() && self.started.elapsed() > Duration::from_secs(120) {
             anyhow::bail!("Capture timed out waiting for 3D world");
         }
         Ok(ready)
@@ -408,6 +383,8 @@ pub fn run() -> Result<()> {
         error: None,
         capture: None,
         frames: 0,
+        capture_frames: 64,
+        lighting: LightingMode::Global,
         started: Instant::now(),
         last_frame: Instant::now(),
         accumulator: 0.0,
@@ -434,6 +411,29 @@ pub fn run() -> Result<()> {
             "--cert" => app.session.certificate = args.next().context("--cert requires a file")?,
             "--name" => app.session.name = args.next().context("--name requires a name")?,
             "--capture" => app.capture = Some(args.next().context("--capture requires a path")?),
+            "--capture-frames" => {
+                app.capture_frames = args
+                    .next()
+                    .context("--capture-frames requires a count")?
+                    .parse()?;
+                anyhow::ensure!(
+                    (1..=4096).contains(&app.capture_frames),
+                    "capture frames must be 1..4096"
+                );
+            }
+            "--lighting" => {
+                app.lighting = match args
+                    .next()
+                    .context("--lighting requires gi, direct, indirect or legacy")?
+                    .as_str()
+                {
+                    "gi" => LightingMode::Global,
+                    "direct" => LightingMode::Direct,
+                    "indirect" => LightingMode::Indirect,
+                    "legacy" => LightingMode::Legacy,
+                    _ => anyhow::bail!("lighting must be gi, direct, indirect or legacy"),
+                };
+            }
             "--fov" => {
                 app.fov = args.next().context("--fov requires degrees")?.parse()?;
                 anyhow::ensure!((55.0..=100.0).contains(&app.fov), "FOV must be 55..100");
@@ -444,7 +444,7 @@ pub fn run() -> Result<()> {
                 app.yaw = degrees.to_radians().rem_euclid(std::f32::consts::TAU);
             }
             "--help" => {
-                println!("client [--demo] [--connect] [--server IP:PORT] [--cert FILE.der] [--name NAME] [--capture FILE.png] [--fov 55..100] [--yaw DEGREES]");
+                println!("client [--demo] [--connect] [--server IP:PORT] [--cert FILE.der] [--name NAME] [--capture FILE.png] [--capture-frames 1..4096] [--lighting gi|direct|indirect|legacy] [--fov 55..100] [--yaw DEGREES]");
                 return Ok(());
             }
             _ => anyhow::bail!("Unknown option: {arg}"),

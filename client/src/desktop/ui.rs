@@ -127,6 +127,17 @@ impl App {
         }
         ui.add_space(16.0);
         ui.add(egui::Slider::new(&mut self.fov, 55.0..=100.0).text("Field of view"));
+        ui.label("Lighting");
+        for (mode, label) in [
+            (game_engine::LightingMode::Global, "Global illumination"),
+            (game_engine::LightingMode::Direct, "Direct light only"),
+            (game_engine::LightingMode::Indirect, "Indirect light only"),
+            (game_engine::LightingMode::Legacy, "Original lighting"),
+        ] {
+            if ui.selectable_label(self.lighting == mode, label).clicked() {
+                commands.push(Command::Lighting(mode));
+            }
+        }
         let p = self.session.model.body.position;
         ui.monospace(format!("X {:.1}  Y {:.1}  Z {:.1}", p[0], p[1], p[2]));
         ui.weak("WASD / arrows: move\nMouse: look\nSpace: jump\nClick / F: melee\nG: pick up\nTab: inventory\nEsc: release mouse");

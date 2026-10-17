@@ -16,7 +16,7 @@ struct Out {
     out.world=position;out.normal=normal;out.color=color;out.uv=uv;out.pattern=pattern;return out;
 }
 fn hash(p:vec3f)->f32 { return fract(sin(dot(p,vec3f(127.1,311.7,74.7)))*43758.5453); }
-@fragment fn fs_main(in:Out)->@location(0) vec4f {
+fn material(in:Out)->vec3f {
     let pixel=floor(in.uv*16.0);
     let seed=floor(in.world-in.normal*0.01);
     let noise=hash(vec3f(pixel,0.0)+seed*19.0);
@@ -30,10 +30,21 @@ fn hash(p:vec3f)->f32 { return fract(sin(dot(p,vec3f(127.1,311.7,74.7)))*43758.5
     if in.pattern==4u {texture=0.75+noise*0.35;}
     let detail=1.0-smoothstep(0.04,0.14,max(length(dpdx(in.uv)),length(dpdy(in.uv))));
     texture=mix(1.0,texture,detail);
+    return in.color*texture;
+}
+@fragment fn fs_main(in:Out)->@location(0) vec4f {
     let sun=normalize(vec3f(-0.45,0.85,0.3));
     let lighting=0.62+0.32*max(dot(in.normal,sun),0.0)+0.06*max(in.normal.y,0.0);
-    var color=in.color*texture*lighting;
+    var color=material(in)*lighting;
     let fog=smoothstep(28.0,66.0,length(in.world-camera.eye.xyz));
     color=mix(color,vec3f(0.55,0.68,0.72),fog);
     return vec4f(color,1.0);
+}
+struct GBuffer {
+    @location(0) position:vec4f,
+    @location(1) normal:vec4f,
+    @location(2) albedo:vec4f,
+};
+@fragment fn fs_gbuffer(in:Out)->GBuffer {
+    return GBuffer(vec4f(in.world,1),vec4f(normalize(in.normal),1),vec4f(material(in),1));
 }
