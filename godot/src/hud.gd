@@ -5,6 +5,15 @@ signal disconnect_requested
 signal chat_requested(text: String)
 signal fov_changed(value: float)
 signal lighting_changed(enabled: bool)
+signal singleplayer_requested
+signal resume_requested
+signal home_requested
+signal quit_requested
+
+const MenuScript = preload("res://src/menu.gd")
+var menu: Control
+var top: PanelContainer
+var bottom: PanelContainer
 
 var panel: PanelContainer
 var address: LineEdit
@@ -16,8 +25,6 @@ var health: Label
 var coordinates: Label
 var inventory: Label
 var journal: Label
-var connect_button: Button
-var disconnect_button: Button
 var reticle: Label
 var hint: Label
 var fov_slider: HSlider
@@ -42,7 +49,7 @@ func _ready() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.theme = theme
 	add_child(root)
-	var top := PanelContainer.new()
+	top = PanelContainer.new()
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	top.offset_bottom = 58
 	root.add_child(top)
@@ -54,14 +61,14 @@ func _ready() -> void:
 	health = label(title, "", 17)
 	health.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	health.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	var bottom := PanelContainer.new()
+	bottom = PanelContainer.new()
 	bottom.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	bottom.offset_top = -74
 	root.add_child(bottom)
 	var footer := VBoxContainer.new()
 	bottom.add_child(footer)
 	status = label(footer, "Ready", 14)
-	label(footer, "WASD / Arrows  Move     Space  Jump     Click / F  Attack     G  Pick up     Tab  Pack     Esc  Release mouse", 14)
+	label(footer, "WASD / Arrows  Move     Space  Jump     Click / F  Attack     G  Pick up     Tab  Pack     Esc  Menu", 14)
 	panel = PanelContainer.new()
 	panel.set_anchors_and_offsets_preset(Control.PRESET_RIGHT_WIDE)
 	panel.offset_left = -340
@@ -75,14 +82,6 @@ func _ready() -> void:
 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	column.add_theme_constant_override("separation", 10)
 	scroll.add_child(column)
-	label(column, "Explore the frontier", 22)
-	address = field(column, "Server", "127.0.0.1:9876")
-	player_name = field(column, "Name", "Explorer")
-	certificate = field(column, "Server certificate (.der)", ProjectSettings.globalize_path("res://../save/server.cert.der"))
-	connect_button = button(column, "Connect", func(): connect_requested.emit(address.text, player_name.text, certificate.text))
-	button(column, "Offline walkthrough", func(): demo_requested.emit())
-	disconnect_button = button(column, "Disconnect", func(): disconnect_requested.emit())
-	column.add_child(HSeparator.new())
 	label(column, "Inventory", 19)
 	inventory = label(column, "Your pack is empty.", 15)
 	inventory.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -95,18 +94,6 @@ func _ready() -> void:
 		if not text.strip_edges().is_empty():
 			chat_requested.emit(text)
 			chat.clear())
-	label(column, "Field of view", 15)
-	fov_slider = HSlider.new()
-	fov_slider.min_value = 55
-	fov_slider.max_value = 100
-	fov_slider.value = 72
-	column.add_child(fov_slider)
-	fov_slider.value_changed.connect(func(value: float): fov_changed.emit(value))
-	gi_toggle = CheckButton.new()
-	gi_toggle.text = "Global illumination"
-	gi_toggle.button_pressed = true
-	column.add_child(gi_toggle)
-	gi_toggle.toggled.connect(func(enabled: bool): lighting_changed.emit(enabled))
 	coordinates = label(column, "", 14)
 	reticle = label(root, "+", 25)
 	reticle.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
@@ -115,6 +102,20 @@ func _ready() -> void:
 	hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	hint.position += Vector2(-90, 38)
 	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	menu = MenuScript.new()
+	root.add_child(menu)
+	address = menu.address
+	player_name = menu.player_name
+	certificate = menu.certificate
+	fov_slider = menu.fov_slider
+	gi_toggle = menu.gi_toggle
+	menu.connect_requested.connect(func(a: String, n: String, c: String): connect_requested.emit(a,n,c))
+	menu.singleplayer_requested.connect(func(): singleplayer_requested.emit())
+	menu.resume_requested.connect(func(): resume_requested.emit())
+	menu.home_requested.connect(func(): home_requested.emit())
+	menu.quit_requested.connect(func(): quit_requested.emit())
+	menu.fov_changed.connect(func(value: float): fov_changed.emit(value))
+	menu.lighting_changed.connect(func(enabled: bool): lighting_changed.emit(enabled))
 
 func label(parent: Node, text: String, size: int) -> Label:
 	var result := Label.new()
@@ -139,7 +140,9 @@ func button(parent: Node, text: String, callback: Callable) -> Button:
 	return result
 
 func update_state(state: Dictionary, captured: bool) -> void:
-	panel.visible = inventory_open or not state.ready
+	panel.visible = inventory_open and state.ready and not menu.visible
+	top.visible = state.ready and not menu.visible
+	bottom.visible = top.visible
 	health.text = "HEALTH  %d / 100" % state.hp if state.ready else ""
 	status.text = "%s   /   %d pending inputs" % [state.status, state.pending]
 	var p: Vector3 = state.body_position
@@ -150,7 +153,5 @@ func update_state(state: Dictionary, captured: bool) -> void:
 	inventory.text = "Your pack is empty." if rows.is_empty() else "\n".join(rows)
 	journal.text = "\n".join(PackedStringArray(state.journal))
 	chat.editable = state.ready and not state.demo
-	connect_button.disabled = state.connected
-	disconnect_button.visible = state.connected or state.demo
-	reticle.visible = state.ready and not panel.visible
-	hint.visible = state.ready and not captured and not panel.visible
+	reticle.visible = state.ready and not panel.visible and not menu.visible
+	hint.visible = state.ready and not captured and not panel.visible and not menu.visible

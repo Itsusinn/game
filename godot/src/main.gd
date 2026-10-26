@@ -25,8 +25,13 @@ var capture_path := ""
 var capture_frames := 64
 var ready_frames := 0
 var capture_pending := false
+var capture_requires_world := false
 var started := Time.get_ticks_msec()
 var options: Dictionary = {}
+var pending_action := ""
+var entering_game := false
+var was_ready := false
+var exit_code := 0
 
 func _ready() -> void:
 	bridge = GameBridge.new()
@@ -42,7 +47,15 @@ func _ready() -> void:
 	hud.chat_requested.connect(func(text: String): bridge.send_chat(text))
 	hud.fov_changed.connect(func(value: float): camera.fov = value)
 	hud.lighting_changed.connect(func(enabled: bool): environment.sdfgi_enabled = enabled)
+	hud.singleplayer_requested.connect(_singleplayer)
+	hud.resume_requested.connect(_resume_game)
+	hud.home_requested.connect(func(): _leave_game(false))
+	hud.quit_requested.connect(func(): _leave_game(true))
+	camera.fov = hud.fov_slider.value
+	environment.sdfgi_enabled = hud.gi_toggle.button_pressed
+	get_tree().auto_accept_quit = false
 	options = _parse_options(OS.get_cmdline_user_args())
+	capture_requires_world = options.has("demo") or options.has("connect") or options.has("singleplayer")
 	if options.has("server"): hud.address.text = options.server
 	if options.has("name"): hud.player_name.text = options.name
 	if options.has("cert"): hud.certificate.text = options.cert
@@ -52,6 +65,7 @@ func _ready() -> void:
 	if options.has("capture-frames"): capture_frames = clampi(int(options["capture-frames"]),1,4096)
 	if options.get("lighting", "gi") == "direct": hud.gi_toggle.button_pressed = false
 	if options.has("demo"): _demo()
+	if options.has("singleplayer"): _singleplayer()
 	if options.has("connect"): _connect_game(hud.address.text,hud.player_name.text,hud.certificate.text)
 	state = bridge.snapshot()
 	hud.update_state(state, captured)
@@ -63,7 +77,7 @@ func _parse_options(args: PackedStringArray) -> Dictionary:
 	var i := 0
 	while i < args.size():
 		var key := args[i].trim_prefix("--")
-		if key in ["demo", "connect"]:
+		if key in ["demo", "connect", "singleplayer"]:
 			result[key] = true
 		elif key in ["server", "name", "cert", "fov", "yaw", "capture", "capture-frames", "lighting"]:
 			i += 1
@@ -153,6 +167,8 @@ func _demo() -> void:
 	_release_mouse()
 	bridge.start_demo()
 	hud.inventory_open = false
+	hud.menu.hide()
+	hud.menu.in_game = true
 	yaw = deg_to_rad(float(options.get("yaw",0)))
 	pitch = -0.10
 
@@ -160,6 +176,44 @@ func _connect_game(address: String, player_name: String, certificate: String) ->
 	_release_mouse()
 	bridge.connect_game(address,player_name,certificate)
 	hud.inventory_open = false
+	entering_game = true
+	hud.menu.in_game = false
+	hud.menu.show_page("busy")
+
+func _singleplayer() -> void:
+	_release_mouse()
+	var save_path := OS.get_environment("CDDA_SAVE_PATH")
+	if save_path.is_empty(): save_path = "save/world3d.bin"
+	bridge.start_singleplayer(save_path)
+	hud.inventory_open = false
+	entering_game = true
+	hud.menu.in_game = false
+	hud.menu.show_page("busy")
+
+func _resume_game() -> void:
+	if not state.get("ready", false): return
+	hud.menu.hide()
+	hud.inventory_open = false
+	var owner := get_viewport().gui_get_focus_owner()
+	if owner: owner.release_focus()
+	_release_mouse()
+	if focused:
+		captured = true
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+func _leave_game(quit_game: bool) -> void:
+	if not pending_action.is_empty(): return
+	# A failed save stays visible. A subsequent explicit quit may still close the app.
+	if quit_game and state.get("local_error", false) and not state.get("local_running", false) and not state.get("shutdown_pending", false):
+		get_tree().quit()
+		return
+	entering_game = false
+	pending_action = "quit" if quit_game else "home"
+	_disconnect_game()
+	hud.menu.show_page("busy")
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and is_instance_valid(hud): _leave_game(true)
 
 func _disconnect_game() -> void:
 	_release_mouse()
@@ -182,8 +236,17 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			_release_mouse()
+			if pending_action.is_empty() and not entering_game:
+				if hud.menu.visible:
+					if hud.menu.page == "settings": hud.menu.show_page(hud.menu.return_page)
+					elif hud.menu.page == "multiplayer": hud.menu.show_page("home")
+					elif hud.menu.page == "pause": _resume_game()
+				elif state.get("ready", false):
+					hud.inventory_open = false
+					hud.menu.in_game = true
+					hud.menu.show_page("pause")
 			get_viewport().set_input_as_handled()
-		elif event.keycode == KEY_TAB:
+		elif event.keycode == KEY_TAB and state.get("ready", false) and not hud.menu.visible:
 			hud.inventory_open = not hud.inventory_open
 			_release_mouse()
 			var focus_owner := get_viewport().gui_get_focus_owner()
@@ -191,12 +254,14 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
+	if hud.menu.visible: return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if captured and event.physical_keycode == KEY_F: attack = true
 		elif captured and event.physical_keycode == KEY_G: pickup = true
 	if event is InputEventMouseMotion and captured:
-		yaw = fposmod(yaw + event.relative.x * 0.0025,TAU)
-		pitch = clampf(pitch - event.relative.y * 0.0025,-1.45,1.45)
+		var sensitivity: float = 0.0025 * hud.menu.sensitivity.value
+		yaw = fposmod(yaw + event.relative.x * sensitivity,TAU)
+		pitch = clampf(pitch - event.relative.y * sensitivity,-1.45,1.45)
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_LEFT and state.get("ready",false) and not hud.inventory_open:
 			if captured: attack = true
@@ -209,7 +274,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _process(delta: float) -> void:
 	var controls := {"yaw": yaw, "pitch": pitch}
-	if captured and focused and not hud.inventory_open:
+	if captured and focused and not hud.inventory_open and not hud.menu.visible:
 		controls.forward = Input.get_action_strength("forward") - Input.get_action_strength("back")
 		controls.strafe = Input.get_action_strength("right") - Input.get_action_strength("left")
 		controls.jump = Input.is_action_pressed("jump")
@@ -218,6 +283,32 @@ func _process(delta: float) -> void:
 	attack = false
 	pickup = false
 	state = bridge.advance(delta,controls)
+	if not pending_action.is_empty():
+		hud.menu.feedback.text = state.status
+		if not state.local_running and not state.shutdown_pending:
+			var action := pending_action
+			pending_action = ""
+			hud.menu.in_game = false
+			hud.menu.show_page("home")
+			if state.local_error:
+				hud.menu.feedback.text = state.status + "\n未自动退出，请检查存档错误。"
+			elif action == "quit": get_tree().quit(exit_code)
+	elif entering_game:
+		hud.menu.feedback.text = state.status
+		if state.ready:
+			entering_game = false
+			hud.menu.in_game = true
+			hud.menu.hide()
+		elif not state.connected and not state.local_running:
+			entering_game = false
+			hud.menu.show_page("home")
+			hud.menu.feedback.text = state.status
+	elif was_ready and not state.ready:
+		_release_mouse()
+		hud.menu.in_game = false
+		hud.menu.show_page("home")
+		hud.menu.feedback.text = state.status
+	was_ready = state.ready
 	if not state.ready and captured: _release_mouse()
 	var next_revision := Vector2i(state.generation,state.revision)
 	if revision.x != next_revision.x:
@@ -231,12 +322,16 @@ func _process(delta: float) -> void:
 		camera.rotation = Vector3(pitch,-yaw,0)
 		_update_entities()
 		ready_frames += 1
+	elif hud.menu.visible and hud.menu.page == "home" and not entering_game:
+		ready_frames += 1
 	hud.update_state(state,captured)
 	if not capture_path.is_empty() and not capture_pending:
 		if Time.get_ticks_msec() - started > 120000:
 			push_error("Capture timed out waiting for world")
-			get_tree().quit(1)
-		elif state.ready and ready_frames >= capture_frames:
+			capture_pending = true
+			exit_code = 1
+			_leave_game(true)
+		elif (state.ready or (not capture_requires_world and hud.menu.visible and hud.menu.page == "home")) and ready_frames >= capture_frames:
 			capture_pending = true
 			_capture()
 
@@ -300,7 +395,8 @@ func _capture() -> void:
 	var image := get_viewport().get_texture().get_image()
 	var error := image.save_png(capture_path)
 	if error != OK: push_error("Capture save failed: %s" % error)
-	get_tree().quit(0 if error == OK else 1)
+	exit_code = 0 if error == OK else 1
+	_leave_game(true)
 
 func _exit_tree() -> void:
 	_release_mouse()

@@ -87,6 +87,12 @@ func run() -> void:
 	check(b.snapshot().player_id != old_id,"reconnection creates fresh session identity")
 	a.disconnect_game()
 	b.disconnect_game()
+	for i in range(200):
+		var sa := a.advance(0.0,{})
+		var sb := b.advance(0.0,{})
+		if not sa.shutdown_pending and not sb.shutdown_pending: break
+		await create_timer(0.02).timeout
+	check(not a.snapshot().shutdown_pending and not b.snapshot().shutdown_pending,"network workers finish before extension unload")
 	a.queue_free()
 	b.queue_free()
 	await process_frame

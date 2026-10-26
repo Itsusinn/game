@@ -1,3 +1,4 @@
+use crate::local_server::{LocalEvent, LocalServer};
 use crate::network_client::{NetworkEvent, QuicSession, Transport};
 use game_client_core::voxel::Client3d;
 pub type Model = Client3d;
@@ -13,6 +14,9 @@ pub struct Session {
     pub status: String,
     pub demo: bool,
     pub generation: u64,
+    local_server: Option<LocalServer>,
+    pub local_error: bool,
+    retired_transports: Vec<Box<dyn Transport>>,
 }
 impl Default for Session {
     fn default() -> Self {
@@ -25,12 +29,53 @@ impl Default for Session {
             status: "Connect to explore the 3D world.".into(),
             demo: false,
             generation: 0,
+            local_server: None,
+            local_error: false,
+            retired_transports: Vec::new(),
         }
     }
 }
 impl Session {
+    pub fn shutdown_pending(&self) -> bool {
+        self.local_server.as_ref().is_some_and(|s| s.stopping)
+            || !self.retired_transports.is_empty()
+    }
+
+    fn retire_transport(&mut self) {
+        if let Some(mut transport) = self.transport.take() {
+            transport.close();
+            self.retired_transports.push(transport);
+        }
+    }
+
+    pub fn local_running(&self) -> bool {
+        self.local_server.is_some()
+    }
+
+    pub fn start_singleplayer(&mut self, path: std::path::PathBuf) {
+        self.disconnect();
+        if self.local_running() {
+            return;
+        }
+        self.local_error = false;
+        match LocalServer::start(path) {
+            Ok(server) => {
+                self.local_server = Some(server);
+                self.status = "正在启动单人世界…".into();
+            }
+            Err(e) => {
+                self.local_error = true;
+                self.status = format!("单人游戏启动失败：{e:#}");
+            }
+        }
+    }
+
     pub fn connect(&mut self) {
         self.disconnect();
+        if self.local_running() {
+            return;
+        }
+        self.local_error = false;
         let result = (|| -> anyhow::Result<QuicSession> {
             QuicSession::connect_file(
                 self.address.parse()?,
@@ -47,13 +92,49 @@ impl Session {
         }
     }
     pub fn disconnect(&mut self) {
-        self.transport = None;
+        if let Some(server) = &mut self.local_server {
+            server.stop();
+        }
+        self.retire_transport();
         self.model = Client3d::default();
         self.demo = false;
         self.generation += 1;
-        self.status = "Disconnected".into();
+        self.status = if self.local_running() {
+            "正在保存并关闭单人世界…"
+        } else {
+            "Disconnected"
+        }
+        .into();
     }
     pub fn tick(&mut self) {
+        self.retired_transports
+            .retain(|transport| !transport.finished());
+        if let Some(server) = &mut self.local_server {
+            match server.poll() {
+                Some(LocalEvent::Ready(address, certificate)) if !server.stopping => {
+                    match QuicSession::connect(address, self.name.clone(), certificate) {
+                        Ok(transport) => {
+                            self.transport = Some(Box::new(transport));
+                        }
+                        Err(e) => {
+                            self.status = format!("本地连接失败：{e:#}");
+                            self.local_error = true;
+                            server.stop();
+                        }
+                    }
+                }
+                Some(LocalEvent::Finished(result)) => {
+                    self.local_server = None;
+                    if let Err(e) = result {
+                        self.local_error = true;
+                        self.status = format!("单人世界错误：{e:#}");
+                    } else if !self.local_error {
+                        self.status = "单人世界已保存并关闭".into();
+                    }
+                }
+                _ => {}
+            }
+        }
         let mut disconnected = false;
         if let Some(t) = &mut self.transport {
             for _ in 0..256 {
@@ -74,8 +155,12 @@ impl Session {
             }
         }
         if disconnected {
-            self.transport = None;
+            self.retire_transport();
             self.model.ready = false;
+            if let Some(server) = &mut self.local_server {
+                self.local_error = true;
+                server.stop();
+            }
         }
     }
     pub fn input(&mut self, input: PlayerInput) {
@@ -108,6 +193,10 @@ impl Session {
     }
     pub fn load_demo(&mut self) {
         self.disconnect();
+        if self.local_running() {
+            return;
+        }
+        self.local_error = false;
         self.demo = true;
         self.status = "Offline 3D walkthrough / connect for combat and multiplayer".into();
         let mut grid = Grid::empty();

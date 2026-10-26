@@ -20,6 +20,12 @@ struct GameBridge {
 #[godot_api]
 impl GameBridge {
     #[func]
+    fn start_singleplayer(&mut self, path: GString) {
+        self.session.start_singleplayer(path.to_string().into());
+        self.reset_motion();
+    }
+
+    #[func]
     fn start_demo(&mut self) {
         self.session.load_demo();
         self.reset_motion();
@@ -120,6 +126,8 @@ impl GameBridge {
         let journal: VarArray = m.log.iter().map(|e| e.text.to_variant()).collect();
         vdict! {
             "ready" => m.ready, "demo" => self.session.demo,
+            "local_running" => self.session.local_running(), "local_error" => self.session.local_error,
+            "shutdown_pending" => self.session.shutdown_pending(),
             "connected" => self.session.transport.is_some(), "status" => self.session.status.as_str(),
             "generation" => self.session.generation as i64, "revision" => m.revision as i64,
             "position" => vector(self.movement.position()), "body_position" => vector(m.body.position),

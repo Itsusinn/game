@@ -13,6 +13,4 @@ rmp-serde = "1"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
-
-[dev-dependencies]
 server = { path = "../server" }

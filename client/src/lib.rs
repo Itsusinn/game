@@ -1,3 +1,4 @@
+pub mod local_server;
 pub mod mesh;
 pub mod movement;
 pub mod network_client;

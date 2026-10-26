@@ -3,7 +3,14 @@
 use anyhow::{Context, Result};
 use protocol::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::sync::{mpsc, oneshot};
 
 pub enum NetworkEvent {
@@ -13,12 +20,24 @@ pub enum NetworkEvent {
 pub trait Transport {
     fn send(&self, message: ClientMessage) -> Result<(), String>;
     fn poll(&mut self) -> Option<NetworkEvent>;
+    fn close(&mut self) {}
+    fn finished(&self) -> bool {
+        true
+    }
+}
+
+struct Finished(Arc<AtomicBool>);
+impl Drop for Finished {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 pub struct QuicSession {
     outgoing: mpsc::Sender<ClientMessage>,
     incoming: mpsc::Receiver<NetworkEvent>,
     shutdown: Option<oneshot::Sender<()>>,
+    finished: Arc<AtomicBool>,
 }
 impl QuicSession {
     pub fn connect(address: SocketAddr, name: String, certificate: Vec<u8>) -> Result<Self> {
@@ -37,9 +56,12 @@ impl QuicSession {
         let (outgoing, outgoing_rx) = mpsc::channel(64);
         let (incoming_tx, incoming) = mpsc::channel(256);
         let (shutdown, shutdown_rx) = oneshot::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker_finished = finished.clone();
         let _ = std::thread::Builder::new()
             .name("game-network".into())
             .spawn(move || {
+                let _finished = Finished(worker_finished);
                 let certificate = match certificate() {
                     Ok(bytes) => bytes,
                     Err(e) => {
@@ -78,6 +100,7 @@ impl QuicSession {
             outgoing,
             incoming,
             shutdown: Some(shutdown),
+            finished,
         })
     }
 }
@@ -90,12 +113,19 @@ impl Transport for QuicSession {
     fn poll(&mut self) -> Option<NetworkEvent> {
         self.incoming.try_recv().ok()
     }
-}
-impl Drop for QuicSession {
-    fn drop(&mut self) {
+    fn close(&mut self) {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
+        self.incoming.close();
+    }
+    fn finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+}
+impl Drop for QuicSession {
+    fn drop(&mut self) {
+        self.close();
         // Wake a worker waiting to deliver a final message. The worker owns its
         // runtime and finishes asynchronously; never join it on the UI thread.
         self.incoming.close();

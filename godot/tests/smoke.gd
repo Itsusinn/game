@@ -15,6 +15,10 @@ func run() -> void:
 	root.add_child(scene)
 	current_scene = scene
 	scene.set_process(false)
+	scene.hud.menu.loading_settings = true # Tests must not overwrite user preferences.
+	check(scene.hud.menu.visible and scene.hud.menu.page == "home", "startup shows main menu")
+	scene.hud.menu.show_page("multiplayer")
+	check(scene.hud.address.is_visible_in_tree(), "multiplayer form opens separately")
 	scene._demo()
 	var bridge: GameBridge = scene.bridge
 	var first := bridge.snapshot()
@@ -54,12 +58,51 @@ func run() -> void:
 	check(not scene.hud.inventory_open,"Tab closes inventory even with a focused text field")
 	scene.hud.fov_slider.value = 85
 	check(scene.camera.fov == 85,"FOV control updates camera")
+	key.keycode = KEY_ESCAPE
+	Input.action_press("forward")
+	scene.attack = true
+	scene._input(key)
+	scene._process(0.0)
+	check(scene.hud.menu.page == "pause" and scene.hud.menu.visible, "Escape opens game menu")
+	check(not scene.captured and not scene.attack and not Input.is_action_pressed("forward"), "game menu clears held movement and attack")
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	scene._unhandled_input(click)
+	check(not scene.captured and not scene.attack, "menu click cannot capture or attack")
+	scene.hud.menu.open_settings()
+	scene._input(key)
+	check(scene.hud.menu.page == "pause", "settings Escape returns to game menu")
+	scene._input(key)
+	check(not scene.hud.menu.visible, "second Escape resumes gameplay")
 	scene._disconnect_game()
 	scene._process(0.0)
 	check(not scene.state.ready and scene.entities.is_empty(),"disconnect clears scene and session")
 	scene._demo()
 	scene._process(0.0)
 	check(scene.camera.position.distance_to(Vector3(28.5,8.58,32.5)) < 0.001,"new session resets camera interpolation")
+	var previous_save := OS.get_environment("CDDA_SAVE_PATH")
+	var isolated_save := ProjectSettings.globalize_path("res://../target/godot-ui-%d/world3d.bin" % Time.get_ticks_usec())
+	OS.set_environment("CDDA_SAVE_PATH", isolated_save)
+	scene._singleplayer()
+	for i in range(300):
+		scene._process(0.0)
+		if scene.state.ready and not scene.state.demo: break
+		await create_timer(0.02).timeout
+	check(scene.state.ready and not scene.state.demo and scene.state.local_running, "single-player menu starts embedded authority")
+	check(not scene.hud.menu.visible, "successful connection dismisses loading menu")
+	scene._leave_game(false)
+	for i in range(300):
+		scene._process(0.0)
+		if scene.pending_action.is_empty(): break
+		await create_timer(0.02).timeout
+	check(not scene.state.local_running and scene.pending_action.is_empty(), "return home waits for local authority shutdown")
+	check(FileAccess.file_exists(isolated_save), "return home saves isolated map")
+	check(scene.hud.menu.visible and scene.hud.menu.page == "home", "return home restores main menu")
+	scene._connect_game("invalid address", "Test", "missing.der")
+	scene._process(0.0)
+	check(scene.hud.menu.page == "home" and not scene.entering_game and not scene.hud.menu.feedback.text.is_empty(), "connection failure returns to menu with diagnostic")
+	OS.set_environment("CDDA_SAVE_PATH", previous_save)
 	scene.queue_free()
 	await process_frame
 	print("GODOT_SMOKE_RESULT=", "FAIL" if failed else "PASS")
