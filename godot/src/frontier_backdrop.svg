@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
+<defs>
+ <linearGradient id="sky" x2="0" y2="1"><stop stop-color="#bfc5c7"/><stop offset="1" stop-color="#eef0e9"/></linearGradient>
+ <linearGradient id="floor" x2="0" y2="1"><stop stop-color="#818d92"/><stop offset="1" stop-color="#303b43"/></linearGradient>
+ <linearGradient id="coat" x2="1" y2="1"><stop stop-color="#4f5b61"/><stop offset="1" stop-color="#151c23"/></linearGradient>
+ <linearGradient id="fade" x2="1" y2="0"><stop stop-color="#121c26" stop-opacity=".22"/><stop offset=".55" stop-color="#8a969c" stop-opacity="0"/><stop offset="1" stop-color="#202b35" stop-opacity=".25"/></linearGradient>
+ <pattern id="mesh" width="46" height="46" patternUnits="userSpaceOnUse"><path d="M46 0H0V46" fill="none" stroke="#fff" stroke-opacity=".07"/></pattern>
+</defs>
+<path fill="url(#sky)" d="M0 0h1280v800H0z"/>
+<!-- Distant voxel settlement; original vector scenery, not game reference art. -->
+<g fill="#9fa9ad"><path d="M0 250h80v-60h55v45h48v-86h92v129h83v-66h67v44h87v-95h100v95h78v-60h89v92h68v-135h82v112h132v-92h73v78h146v240H0z"/></g>
+<g fill="#748188"><path d="M0 367h126V262h80v44h70v-80h83v135h72v-61h101v86h90v-102h100v65h68v-37h88v93h118v-122h80v52h104v-76h100v237H0z"/></g>
+<path fill="url(#floor)" d="M0 460l623-109 657 90v359H0z"/>
+<g fill="none" stroke="#c7cfd0" stroke-opacity=".26" stroke-width="2"><path d="M0 755l623-404M180 800l443-449M500 800l123-449M950 800L623 351M1280 724L623 351M0 590h1280M0 670h1280M0 757h1280"/></g>
+<!-- Gantry framing and faceted hangar blocks. -->
+<path fill="#303d45" d="M0 0h112l-1 397L0 472zM122 0h46l-24 354-33 43zM0 64l611 54v24L0 98z"/>
+<path fill="#536168" d="M0 98l611 44v16L0 119z"/>
+<g fill="none" stroke="#43525a" stroke-width="9"><path d="M166 0l168 117L442 0M168 130L355 0M604 0v158M1001 0v259M1001 128l279 80M1130 0v317"/></g>
+<path fill="#404f57" d="M0 451l209-88 78 20v200L0 679z"/>
+<path fill="#5a676d" d="M209 363l78 20v200l-78-23z"/>
+<path fill="#bcc6c9" d="M19 455l168-70v9L19 467z" opacity=".6"/>
+<path fill="#d89346" d="M0 606l209-76v6L0 613z"/>
+<g stroke="#64727a" stroke-width="2"><path d="M24 475v117M58 461v119M94 445v120M132 428v122M173 411v123"/></g>
+<path fill="#536169" d="M848 290l226-69 206 46v217l-206-30-226 45z"/>
+<path fill="#7d898e" d="M848 290l226-69v233l-226 45z"/>
+<g fill="#38464f"><path d="M869 312l43-12v77l-43 11zM929 294l43-12v77l-43 11zM989 275l43-12v77l-43 11z"/></g>
+<!-- Voxel explorer / expedition equipment. -->
+<path fill="#1a242c" opacity=".5" d="M177 705l158-55 249 40-169 66z"/>
+<path fill="#303d46" d="M266 270l100-24 98 65-3 196-129 8-77-103z"/>
+<path fill="#19242d" d="M245 300l52-16 14 154-55 15z"/>
+<path fill="#8d9a9e" d="M253 306l32-8 3 57-31 8z"/>
+<path fill="#28343c" d="M291 421l66-5 10 230-66 37-28-18z"/>
+<path fill="#15212a" d="M364 425l65-14 34 221-49 44-33-18z"/>
+<path fill="#627078" d="M301 545l52-4 7 49-52 11zM391 527l43-8 12 48-46 15z"/>
+<path fill="#101a22" d="M301 645l66-14 2 55-88 32-18-16zM414 630l48-13 24 42-78 32-21-15z"/>
+<path fill="url(#coat)" d="M296 272l76-22 72 61-8 167-126 19-36-91z"/>
+<path fill="#66757c" d="M296 272l76-22 72 61-79 19z"/>
+<path fill="#1b2932" d="M365 330l79-19-8 167-65 14z"/>
+<path fill="#d8dedb" d="M301 288l15-5 62 177-14 5z"/>
+<path fill="#d79b49" d="M313 333l15-4 9 28-15 4zM331 384l15-4 9 28-15 4z"/>
+<path fill="#343f48" d="M295 287l-47 34-23 141 39 20 38-88z"/>
+<path fill="#717c80" d="M231 419l39 15-8 44-36-15z"/>
+<path fill="#252f37" d="M429 309l43 8 20 129-36 18-27-77z"/>
+<path fill="#a9b2b3" d="M456 421l31-10 7 45-36 15z"/>
+<path fill="#4c5a63" d="M308 183l71-18 62 43-8 79-70 31-56-50z"/>
+<path fill="#aeb8b8" d="M308 183l71-18 62 43-76 24z"/>
+<path fill="#d2d8d3" d="M308 183l57 49-2 86-56-50z"/>
+<path fill="#1e2b35" d="M365 232l76-24-5 45-72 26z"/>
+<path fill="#839da5" d="M373 239l57-19-2 9-55 19z"/>
+<path fill="#d1a24e" d="M320 251l19 7v18l-19-7z"/>
+<g fill="none" stroke="#dde4e4" stroke-opacity=".3"><path d="M230 171h-22v365h27M444 151h24v118M253 156h168M244 528h17"/><circle cx="338" cy="361" r="175"/><path d="M338 174v25M338 523v25M151 361h25M500 361h25"/></g>
+<path fill="url(#mesh)" d="M0 0h1280v800H0z"/>
+<path fill="url(#fade)" d="M0 0h1280v800H0z"/>
+</svg>

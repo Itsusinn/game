@@ -17,7 +17,7 @@ just client
 
 `just client` 会先编译并安装扩展 DLL；重新编译前关闭使用该 DLL 的游戏或编辑器。直接联机可执行 `powershell -File scripts/godot.ps1 run --connect`，直接进入单人游戏使用 `powershell -File scripts/godot.ps1 run --singleplayer`。
 
-设置包含视野、鼠标灵敏度、全局光照和全屏，保存在 Godot 用户目录的 `settings.cfg`。菜单设计参考[腾讯游戏学堂的 UI/UX 分析](https://gameinstitute.qq.com/article/10027)，采用明确的按钮层级、半透明覆盖层和同层页面切换。
+设置包含视野、鼠标灵敏度、全局光照和全屏，保存在 Godot 用户目录的 `settings.cfg`。菜单保留 [Fluent Design 的光线、深度、动效和材质思路](https://gameinstitute.qq.com/article/10027)：圆角玻璃按钮、受光边缘、柔和投影、悬停高光与抬升、按压回落及页面缩放淡入。背景采用项目自有的工业场景与方块角色 SVG，整体使用黑白灰、蓝色多人入口及橙色强调。游戏内菜单模糊当前世界，设置、HUD 和行囊共用 `godot/src/interface_theme.gd` 主题。
 
 ```sh
 just demo
