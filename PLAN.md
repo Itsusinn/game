@@ -1,15 +1,35 @@
-# 3D 方块游戏架构与决策
+# Godot + Rust 迁移架构与进度
 
 ## 已确认方向
 
 用户已明确将二维地牢改成 Minecraft 式的完整 3D 可玩基础：第一人称、三维方块世界、连续移动、跳跃、碰撞、战斗和联机。本轮不包含挖掘建造。
 
-继续使用 Rust stable、wgpu/WGSL、winit、egui、hecs 和 Quinn。不引入另一套完整游戏引擎。首版世界为 64×32×64，有固定边界；暂不增加无限区块流送或多区域迁移。
+已确认使用 Godot + Rust，并选择 **Forward+ + SDFGI**。Godot 负责窗口、输入、场景、画面和 UI，Rust 通过 godot-rust/gdext 接入。保留 Rust stable、hecs 和经过 TLS 验证的 Quinn。首版世界为 64×32×64，有固定边界；暂不增加无限区块流送或多区域迁移。
+
+版本固定为 Godot 4.7.2、`godot = 0.5.5` / `api-4-7`。正式项目为 `godot/`，桥接 crate 为 `godot-extension/`。服务端及 `protocol/`、`simulation/`、`client-core/` 不依赖 Godot；网络后台任务与场景树隔离。
+
+## 迁移阶段（2026-10-27）
+
+1. 已记录原有未提交移动插值修改，迁移到 `client/src/movement.rs` 并保留六项行为测试。原客户端截图在忽略目录 `target/migration-baseline/legacy.png`；原 workspace 测试通过。
+2. 已建立真实 GDExtension、主线程批量桥接和可复用会话层。证书读取移到网络线程，断线用取消信号清理，不在 Godot 主线程 join。协议、模拟和存档格式未变。
+3. 已接通分区块地形、角色和物品网格、程序化材质、相机、输入、固定步长和插值；离线 headless 场景测试通过，包括跳跃、碰撞、输入边界、焦点释放、Tab、FOV 和会话切换。
+4. 已接通真实 QUIC、菜单、HUD、背包、日志、聊天及攻击/拾取命令。Godot 内两个桥接实例测试通过：连接、移动/跳跃及同步、拾取、聊天、近战、断开和重新连接。Rust 测试覆盖敌人攻击、死亡复活保留背包、证书失败、协议及存档保护。两独立窗口的交互验收仍待完成。
+5. Windows debug/release 均已导出，独立 EXE 在 RX 7900 XTX 上运行 Forward+。两份导出程序同时连接隔离的独立 Rust 服务端，接收世界、完成 GPU 截图、正常退出，服务端正常保存；日志和截图位于 `target/export-network-b4b381eb6e024a8f94d7f8b6a6ff474b/`。没有启动本项目编辑器，标准模板不依赖 .NET 或 MCP；外部安装验证沙盒未参与。`just check`、`cargo test --workspace --jobs 2`、`just build`、`just web-check`、`just godot-smoke` 和 `just godot-multiplayer` 通过。MSVC 链接器有创建导入库的提示，严格 Clippy 无警告。
+
+尚未完成：实际键鼠、DPI/窗口缩放/最小化、两窗口联机与完整视觉对照。Computer Use 对 Godot .NET 的授权被拒绝，未绕过；BotBus 图片分享调用也被拒绝。保留旧 `engine/` 和显式 `legacy` 客户端作为临时参考，待替代路径完成实机验收后再移除。这一状态不能称为整个重构已完成。
+
+## MCP 正式项目接入（2026-10-27）
+
+- 已关闭 CLI 管理的安装验证沙盒编辑器，将 `http://localhost:17860/mcp` 接到 `C:/Workspace/Code/game/godot/`。
+- Godot-MCP 插件版本 0.33.0，编辑器程序集 `Dungeon.Editor.csproj`；仅编辑器工具使用 .NET，运行时 Rust/GDScript 边界不变。可复现启动命令见 README。
+- 经 MCP `rql_mutate` 设置主场景根节点 `EditorDescription` 并调用 `SaveScene()`；MCP 回读与本地 `scenes/main.tscn` 一致。`script_validate` 检查 `src/main.gd` 返回零错误、零警告。本次修改不改变玩法或画面，不能替代前述实机交互验收。
+- 导出脚本改用纯运行时暂存项目，避免插件及其项目配置进入产物，并隔离 MCP 编辑器占用的 DLL。重新导出 release 后检查 PCK 未包含工具名称、工具配置或凭据路径；独立客户端加载 Rust 扩展、启动离线场景并正常退出。
 
 ## 数据流
 
 ```text
-winit 鼠标 / 按键
+Godot InputMap / 鼠标 / UI
+    -> GameBridge（Godot 主线程）
     -> 30 Hz PlayerInput
     -> 有界 QUIC 发送队列成功入队
     -> Client3d 待确认队列 + game-simulation 本地预测
@@ -17,8 +37,8 @@ winit 鼠标 / 按键
     -> VoxelWorld 权威运动 / hecs NPC / 战斗 / 拾取
     -> World3d（执行确认号、Body、角色与物品）
     -> 客户端应用权威状态并重放未确认输入
-    -> scene 方块面与角色网格 -> engine 深度渲染
-                              + egui 独立 HUD pass
+    -> 批量状态快照、纯数据区块/实体网格
+    -> Godot ArrayMesh / Camera3D / Forward+ + SDFGI / Control UI
 ```
 
 `game-simulation` 是新增的无平台依赖共享模块，拥有网格查询和运动规则，避免服务端依赖客户端实现，也避免把物理逻辑塞进协议层。Y 轴向上，X/Z 为水平面；Body 使用连续浮点坐标和速度。输入不携带时间步长或最终坐标，客户端不能用超大 dt 或位置直接驱动权威状态。
@@ -34,13 +54,12 @@ winit 鼠标 / 按键
 
 ## 渲染与窗口
 
-- engine 只接受通用顶点和相机，不了解方块类型和游戏网络。
-- scene 剔除相邻实心方块之间的面，地形网格按版本缓存；动态实体独立上传。
-- 透视相机、Depth32Float、背面剔除、程序化像素材质、太阳软阴影、漫反射 GI 和距离雾。采用已确认的路线 A：保留 wgpu/WGSL，适配 kajiya 的首跳追踪和时域递归辐照度缓存思路；不引入其 Vulkan 后端。当前用表面缓存和历史平均，不包含完整 ReSTIR、镜面反射、透明流体或昼夜循环。算法差异、数据布局和验证见 `engine/LIGHTING.md`。
-- 世界先输出 G-buffer，再由 compute 遍历静态/动态三角形 BVH，更新双缓冲表面缓存，进行半分辨率光照追踪、重投影去噪和双边上采样。engine 接收通用网格，不读取游戏协议或体素类型。
-- 世界 pass 使用物理像素视口和深度缓冲，HUD 在无深度的独立 pass 绘制。窗口尺寸变化重建深度、G-buffer 和屏幕历史；视口变化使重投影历史失效。零尺寸跳过渲染，surface 失效重建或重新配置。
+- `client::presentation` 生成纯 CPU 网格，剔除相邻实心方块之间的面；每个 16³ 区块对应一个 Godot 网格节点，没有逐方块节点。当前地图不可编辑，仅地图版本变化时重建静态地形，动态实体按 ID 复用节点；后续加入可编辑地形时需进一步按脏区块更新。
+- Godot 主线程创建 ArrayMesh、资源和节点；后台仅传递 Rust 数据。Godot 不再移动同一玩家的物理刚体，碰撞完全由 Rust 共享模拟负责。
+- 使用 Forward+、SDFGI、SSAO、太阳阴影、程序化像素材质与距离雾。原 WGSL/kajiya 思路的光照是视觉参考，没有嵌入旧 wgpu 渲染循环。SDFGI 与原算法效果不完全相同，动态遮挡和细节表现须实机比较。UI 的 GI 开关只关闭 SDFGI，不切换渲染器。
+- Godot 管理窗口、渲染资源和 Control UI；缩放、DPI、最小化与鼠标交互仍须实际图形会话验收。
 - 点击世界捕获鼠标，Esc / 失焦 / 打开背包释放。松键不受 UI 消费事件影响，防止按键卡住。
-- egui 多次布局仅收集命令，连接与聊天等副作用在布局完成后执行一次。纹理上传和释放生命周期保持完整。
+- 旧 egui 代码在删除前继续遵守多次布局仅收集命令、布局后执行一次副作用的约束；Godot 主入口使用 Control 信号处理 UI 命令。
 
 ## 存档策略
 

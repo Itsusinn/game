@@ -15,8 +15,10 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 mod graphics;
+mod movement;
 mod ui;
 use graphics::{capture, Graphics};
+use movement::Movement;
 enum Command {
     Connect,
     Disconnect,
@@ -36,7 +38,7 @@ struct App {
     lighting: LightingMode,
     started: Instant,
     last_frame: Instant,
-    accumulator: f32,
+    movement: Movement,
     yaw: f32,
     pitch: f32,
     fov: f32,
@@ -75,13 +77,7 @@ impl App {
         let now = Instant::now();
         let elapsed = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
-        if !self.session.model.ready {
-            self.accumulator = 0.0;
-            return;
-        }
-        self.accumulator = (self.accumulator + elapsed).min(0.1);
-        while self.accumulator >= game_simulation::DT {
-            self.accumulator -= game_simulation::DT;
+        self.movement.advance(&mut self.session, elapsed, || {
             let held = |key| self.captured && self.keys.contains(&key);
             let input = PlayerInput {
                 forward: i32::from(held(KeyCode::KeyW) || held(KeyCode::ArrowUp)) as f32
@@ -96,8 +92,8 @@ impl App {
             };
             self.attack = false;
             self.pickup = false;
-            self.session.input(input);
-        }
+            input
+        });
     }
     fn draw(&mut self) -> Result<bool> {
         self.session.tick();
@@ -176,7 +172,8 @@ impl App {
             self.mesh_revision = Some(revision);
             self.frames = 0;
         }
-        let p = self.session.model.body.position;
+        self.movement.sync(&self.session);
+        let p = self.movement.position();
         let camera = Camera {
             eye: [p[0], p[1] + game_simulation::EYE_HEIGHT, p[2]],
             yaw: self.yaw,
@@ -387,7 +384,7 @@ pub fn run() -> Result<()> {
         lighting: LightingMode::Global,
         started: Instant::now(),
         last_frame: Instant::now(),
-        accumulator: 0.0,
+        movement: Movement::default(),
         yaw: 0.0,
         pitch: -0.10,
         fov: 72.0,

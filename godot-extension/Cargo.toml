@@ -1,0 +1,14 @@
+[package]
+name = "game-godot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+godot = { version = "=0.5.5", default-features = false, features = ["api-4-7"] }
+client = { path = "../client", default-features = false }
+protocol = { path = "../protocol" }
+game-simulation = { path = "../simulation" }

@@ -1,5 +1,6 @@
 use crate::network_client::{NetworkEvent, QuicSession, Transport};
 use game_client_core::voxel::Client3d;
+pub type Model = Client3d;
 use game_simulation::{grid::Grid, step_with_actors};
 use protocol::*;
 
@@ -31,8 +32,11 @@ impl Session {
     pub fn connect(&mut self) {
         self.disconnect();
         let result = (|| -> anyhow::Result<QuicSession> {
-            let cert = std::fs::read(&self.certificate)?;
-            QuicSession::connect(self.address.parse()?, self.name.clone(), cert)
+            QuicSession::connect_file(
+                self.address.parse()?,
+                self.name.clone(),
+                self.certificate.clone(),
+            )
         })();
         match result {
             Ok(t) => {

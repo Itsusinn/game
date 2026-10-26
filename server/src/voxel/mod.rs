@@ -459,6 +459,53 @@ struct Save {
 mod tests {
     use super::*;
     #[test]
+    fn enemy_damage_respawns_player_without_losing_inventory() {
+        let mut w = VoxelWorld::new(1);
+        let (tx, mut rx) = mpsc::channel(64);
+        w.register_player(1, tx).unwrap();
+        while rx.try_recv().is_ok() {}
+        w.npcs.clear();
+        let position = [28.5, 7.0, 31.2];
+        w.npcs.spawn((Npc {
+            actor: Actor3d {
+                id: 1 << 31,
+                kind: 1,
+                position,
+                yaw: 0.0,
+                hp: 30,
+                max_hp: 30,
+            },
+            body: Body {
+                position,
+                grounded: true,
+                ..Default::default()
+            },
+            attack_tick: 0,
+        },));
+        w.players.get_mut(&1).unwrap().hp = 8;
+        w.players
+            .get_mut(&1)
+            .unwrap()
+            .inventory
+            .push(InventoryEntry {
+                name: "Supplies".into(),
+                quantity: 1,
+            });
+        w.tick = 29;
+        w.tick();
+        assert_eq!(
+            w.players[&1].hp, 4,
+            "enemy attack applies authoritative damage"
+        );
+        w.tick = 59;
+        w.tick();
+        assert_eq!(w.players[&1].hp, 100, "lethal damage respawns player");
+        assert_eq!(w.players[&1].inventory[0].quantity, 1);
+        assert!(!overlaps(w.players[&1].body.position, &|p| w
+            .terrain
+            .solid(p)));
+    }
+    #[test]
     fn melee_requires_reach_facing_line_of_sight_and_cooldown() {
         let mut w = VoxelWorld::new(1);
         let (tx, _rx) = mpsc::channel(64);

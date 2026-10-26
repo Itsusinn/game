@@ -1,9 +1,30 @@
-/target
-/save
+# Local game state and build/export output
+/target/
+/save/
 *.log
 .env
-**/*.so
-**/*.dylib
-*.uid
+.env.*
+!.env.example
+*.dll
+*.exe
+*.pdb
+*.lib
+*.exp
+*.so
+*.dylib
+*.pck
+
+# Godot and .NET generated files (keep source resources and *.uid)
 .godot/
 gdextension_interface.h
+/godot/bin/
+/godot/obj/
+/godot/.vs/
+*.csproj.user
+
+# Reinstallable editor tooling and local agent configuration
+/godot/.ai-game-dev/
+/godot/.godot-mcp/
+/godot/addons/godot_mcp/
+/godot/.claude/
+/godot/.codex/

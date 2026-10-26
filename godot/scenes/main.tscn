@@ -1,0 +1,7 @@
+[gd_scene format=3 uid="uid://5q81pgog0yo"]
+
+[ext_resource type="Script" uid="uid://cawok0jfik8yn" path="res://src/main.gd" id="1"]
+
+[node name="Dungeon" type="Node3D" unique_id=1474417288]
+editor_description = "Godot presentation root: Forward+ / SDFGI. Rust GDExtension owns simulation, prediction and networking."
+script = ExtResource("1")

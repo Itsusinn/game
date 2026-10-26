@@ -194,3 +194,37 @@ async fn old_protocol_cannot_join_the_3d_world() {
     let _ = stop.send(());
     server.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn wrong_certificate_is_rejected_and_missing_file_surfaces_asynchronously() {
+    let (endpoint, _) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+    let address = endpoint.local_addr().unwrap();
+    let (_other, wrong_cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+    let manager = Arc::new(Mutex::new(VoxelWorld::new(1)));
+    let (stop, stopped) = oneshot::channel();
+    let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
+        let _ = stopped.await;
+    }));
+    assert!(connect_endpoint(address, wrong_cert).await.is_err());
+    assert_eq!(manager.lock().await.player_count(), 0);
+    let mut transport = QuicSession::connect_file(
+        address,
+        "missing".into(),
+        format!("target/nonexistent-certificate-{}.der", std::process::id()),
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(NetworkEvent::Disconnected(reason)) = transport.poll() {
+                assert!(reason.contains("read server certificate"));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(transport);
+    let _ = stop.send(());
+    server.await.unwrap().unwrap();
+}

@@ -25,12 +25,31 @@ pub struct QuicSession {
 }
 impl QuicSession {
     pub fn connect(address: SocketAddr, name: String, certificate: Vec<u8>) -> Result<Self> {
+        Self::connect_with(address, name, move || Ok(certificate))
+    }
+    pub fn connect_file(address: SocketAddr, name: String, path: String) -> Result<Self> {
+        Self::connect_with(address, name, move || {
+            std::fs::read(&path).with_context(|| format!("read server certificate: {path}"))
+        })
+    }
+    fn connect_with(
+        address: SocketAddr,
+        name: String,
+        certificate: impl FnOnce() -> Result<Vec<u8>> + Send + 'static,
+    ) -> Result<Self> {
         let (outgoing, outgoing_rx) = mpsc::channel(64);
         let (incoming_tx, incoming) = mpsc::channel(256);
         let (shutdown, shutdown_rx) = oneshot::channel();
         let worker = std::thread::Builder::new()
             .name("game-network".into())
             .spawn(move || {
+                let certificate = match certificate() {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let _ = incoming_tx.try_send(NetworkEvent::Disconnected(format!("{e:#}")));
+                        return;
+                    }
+                };
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
