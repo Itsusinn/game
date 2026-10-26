@@ -15,6 +15,13 @@ if (Test-Path $consoleExe) { $godotExe = $consoleExe }
 $sdkRoot = [Environment]::GetEnvironmentVariable('DOTNET_ROOT','User')
 if ($sdkRoot) { $env:DOTNET_ROOT=$sdkRoot; $env:PATH=$sdkRoot+';'+$env:PATH }
 
+function Get-DllDigest([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($hash.ComputeHash($stream)) }
+    finally { $hash.Dispose(); $stream.Dispose() }
+}
+
 function Build-Extension([bool]$Release) {
     $profile = if ($Release) { 'release' } else { 'debug' }
     $buildArgs = @('build','-p','game-godot','--jobs','2')
@@ -26,7 +33,7 @@ function Build-Extension([bool]$Release) {
     New-Item -ItemType Directory -Force $dest | Out-Null
     $source = Join-Path $meta.target_directory "$profile/game_godot.dll"
     $installed = Join-Path $dest 'game_godot.dll'
-    if ((Test-Path $installed) -and (Get-FileHash $source).Hash -eq (Get-FileHash $installed).Hash) { return }
+    if ((Test-Path $installed) -and (Get-DllDigest $source) -eq (Get-DllDigest $installed)) { return }
     try { Copy-Item -LiteralPath $source -Destination $dest -Force }
     catch { throw "Close the Godot editor and game before replacing the extension DLL. $_" }
 }

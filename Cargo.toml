@@ -5,7 +5,6 @@ members = [
     "server",
     "client",
     "client-core",
-    "engine",
     "simulation",
     "godot-extension",
 ]

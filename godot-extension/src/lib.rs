@@ -190,7 +190,7 @@ fn geometry(mesh: Mesh) -> VarDictionary {
     let mut colors = PackedColorArray::new();
     let mut uv = PackedVector2Array::new();
     let mut patterns = PackedVector2Array::new();
-    // The old renderer uses counter-clockwise front faces; Godot uses clockwise.
+    // Convert the CPU mesh's counter-clockwise faces to Godot's clockwise winding.
     for tri in mesh.vertices.as_chunks::<3>().0 {
         for i in [0, 2, 1] {
             let v = tri[i];

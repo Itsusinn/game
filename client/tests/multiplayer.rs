@@ -134,7 +134,7 @@ async fn two_clients_receive_voxels_move_jump_chat_and_disconnect_over_verified_
     .expect("3D integration test timed out");
 }
 #[tokio::test]
-async fn desktop_transport_delivers_3d_snapshots_and_closes_remote_session() {
+async fn quic_transport_delivers_3d_snapshots_and_closes_remote_session() {
     let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
     let address = endpoint.local_addr().unwrap();
     let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));

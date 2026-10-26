@@ -1,9 +1,5 @@
-#[cfg(feature = "legacy")]
-pub mod desktop;
 pub mod mesh;
 pub mod movement;
 pub mod network_client;
 pub mod presentation;
-#[cfg(feature = "legacy")]
-pub mod scene;
 pub mod session;

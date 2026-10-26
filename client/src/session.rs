@@ -53,12 +53,6 @@ impl Session {
         self.generation += 1;
         self.status = "Disconnected".into();
     }
-    pub fn shutdown(&mut self) {
-        if let Some(transport) = &mut self.transport {
-            transport.shutdown();
-        }
-        self.disconnect();
-    }
     pub fn tick(&mut self) {
         let mut disconnected = false;
         if let Some(t) = &mut self.transport {

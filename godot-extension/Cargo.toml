@@ -9,6 +9,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = { version = "=0.5.5", default-features = false, features = ["api-4-7"] }
-client = { path = "../client", default-features = false }
+client = { path = "../client" }
 protocol = { path = "../protocol" }
-game-simulation = { path = "../simulation" }

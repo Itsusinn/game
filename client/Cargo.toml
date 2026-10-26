@@ -4,32 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[features]
-default = []
-legacy = ["dep:game-engine", "dep:egui", "dep:egui-wgpu", "dep:egui-winit", "dep:winit", "dep:pollster", "dep:png", "dep:tracing-subscriber"]
-
-[[bin]]
-name = "client"
-path = "src/main.rs"
-required-features = ["legacy"]
-
 [dependencies]
 game-simulation = { path = "../simulation" }
 game-client-core = { path = "../client-core" }
-game-engine = { path = "../engine", optional = true }
 protocol = { path = "../protocol" }
 quinn = "0.11"
 rmp-serde = "1"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
-egui = { version = "0.37", features = ["default_fonts"] , optional = true }
-egui-wgpu = { version = "0.37", optional = true }
-egui-winit = { version = "0.37", optional = true }
-winit = { version = "0.30.13", optional = true }
-pollster = { version = "0.4", optional = true }
-png = { version = "0.18", optional = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] , optional = true }
 
 [dev-dependencies]
 server = { path = "../server" }

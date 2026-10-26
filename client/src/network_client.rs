@@ -13,15 +13,12 @@ pub enum NetworkEvent {
 pub trait Transport {
     fn send(&self, message: ClientMessage) -> Result<(), String>;
     fn poll(&mut self) -> Option<NetworkEvent>;
-    /// Final application shutdown, after the UI event loop has already exited.
-    fn shutdown(&mut self) {}
 }
 
 pub struct QuicSession {
     outgoing: mpsc::Sender<ClientMessage>,
     incoming: mpsc::Receiver<NetworkEvent>,
     shutdown: Option<oneshot::Sender<()>>,
-    worker: Option<std::thread::JoinHandle<()>>,
 }
 impl QuicSession {
     pub fn connect(address: SocketAddr, name: String, certificate: Vec<u8>) -> Result<Self> {
@@ -40,7 +37,7 @@ impl QuicSession {
         let (outgoing, outgoing_rx) = mpsc::channel(64);
         let (incoming_tx, incoming) = mpsc::channel(256);
         let (shutdown, shutdown_rx) = oneshot::channel();
-        let worker = std::thread::Builder::new()
+        let _ = std::thread::Builder::new()
             .name("game-network".into())
             .spawn(move || {
                 let certificate = match certificate() {
@@ -81,7 +78,6 @@ impl QuicSession {
             outgoing,
             incoming,
             shutdown: Some(shutdown),
-            worker: Some(worker),
         })
     }
 }
@@ -94,15 +90,6 @@ impl Transport for QuicSession {
     fn poll(&mut self) -> Option<NetworkEvent> {
         self.incoming.try_recv().ok()
     }
-    fn shutdown(&mut self) {
-        if let Some(tx) = self.shutdown.take() {
-            let _ = tx.send(());
-        }
-        self.incoming.close();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
 }
 impl Drop for QuicSession {
     fn drop(&mut self) {
@@ -112,7 +99,6 @@ impl Drop for QuicSession {
         // Wake a worker waiting to deliver a final message. The worker owns its
         // runtime and finishes asynchronously; never join it on the UI thread.
         self.incoming.close();
-        self.worker.take();
     }
 }
 

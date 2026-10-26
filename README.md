@@ -2,7 +2,7 @@
 
 桌面优先的第一人称多人方块游戏。Godot **Forward+ + SDFGI** 负责画面、场景、输入和 UI；Rust 通过 GDExtension 保留模拟、客户端预测和经过证书验证的 Quinn/QUIC。独立 Rust 服务端使用 hecs，不依赖 Godot。
 
-当前已接通可运行的 Godot 客户端，尚待完整实机键鼠、窗口和导出联机验收。旧渲染器暂留作对照，不代表两条入口将长期维护。迁移进度见 [PLAN.md](PLAN.md)。
+客户端统一使用 Godot，旧桌面入口和自研渲染器已移除。尚待完整实机键鼠及窗口交互验收，架构与验收状态见 [PLAN.md](PLAN.md)。
 
 ## 运行
 
@@ -71,10 +71,9 @@ just demo
 | `protocol/` | 三维消息、区块与角色共享数据、协议版本 |
 | `simulation/` (`game-simulation`) | 平台无关的体素网格查询、固定步长运动、AABB 碰撞、视线检测；由服务端和客户端共用 |
 | `client-core/voxel` | 三维地图缓存、输入队列、预测与权威状态协调 |
-| `client/` | 会话、QUIC 适配器、固定步长调度与显示插值、纯数据网格生成；默认不编译旧桌面宿主 |
+| `client/` | 会话、QUIC 适配器、固定步长调度与显示插值、纯数据网格生成 |
 | `godot-extension/` (`game-godot`) | 主线程桥接：输入、会话、快照、网格批量传递；不重复实现玩法 |
 | `godot/` | Forward+ 场景、相机、材质、输入、Godot Control UI 与导出设置 |
-| `engine/`、`client/src/desktop/` | 迁移前参考，旧客户端仅通过 `--features legacy` 显式启用，完整替代验收后移除 |
 | `server/voxel` | 权威 3D 世界、地形生成、hecs NPC、战斗、快照与带版本的地图存储 |
 
 旧二维世界、存档读取和客户端状态模块已移除，当前只保留三维实现；旧存档文件仍按上述策略保留，不提供自动迁移。浏览器仍没有窗口宿主与网络适配器；WASM 检查通过不代表浏览器游戏可运行。
@@ -104,9 +103,3 @@ Godot MCP 是可选编辑器工具，已接入本仓库 `godot/`，本地端点�
 操作前通过 MCP 查询 `editor | select projectPath, editedScene`，必须指向本仓库，不能把 `GodotMcpSandbox` 当验收项目。修改后用 `editor | call SaveScene()` 保存。2026-10-27 已通过 MCP 给主场景写入职责说明、保存并回读，主脚本验证无错误。导出排除插件、C#、测试、代理技能和工具配置；运行游戏无需 MCP 服务或编辑器。安装阶段的旧开始菜单快捷方式仍指向沙盒，应使用本仓库脚本启动正式项目。
 
 真实 QUIC 集成测试位于 `client/tests/multiplayer.rs`，覆盖两客户端区块传输、连续移动和跳跃、逐玩家输入确认、聊天、断开释放与旧协议拒绝。验证运行使用独立端口、`target/` 下的存档和证书，不能用真实 `save/` 做破坏性测试。
-
-## 视觉参考副本
-
-上一轮下载的 [CDDA 官方 0.I-1 图形版](https://github.com/CleverRaven/Cataclysm-DDA/releases/tag/0.I-1) 保留在 `target/reference/cdda-0.I-1/game/`（被 Git 忽略，`cargo clean` 会清除）。入口为 `cataclysm-tiles.exe`。下载包 SHA-256 为 `c0a90bfc78e5319733abea1c10ea0c0bd7e7e05a842566e9d6da90c5486e01da`。
-
-本轮三维画面采用独立生成的方块几何和程序化材质，没有复制 Minecraft、CDDA 或 Project Zomboid 的资产。
