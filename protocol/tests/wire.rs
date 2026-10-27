@@ -1,6 +1,34 @@
 use protocol::{ClientMessage, ServerMessage};
 
 #[test]
+fn block_edits_and_item_mapping_roundtrip() {
+    use protocol::*;
+    for place in [false, true] {
+        let message = ClientMessage::EditBlock(BlockEdit {
+            target: [15, 7, 16],
+            expected: STONE,
+            yaw: 0.0,
+            pitch: -0.5,
+            place,
+            slot: 8,
+            inventory_revision: 42,
+        });
+        assert_eq!(
+            rmp_serde::from_slice::<ClientMessage>(&rmp_serde::to_vec(&message).unwrap()).unwrap(),
+            message
+        );
+    }
+    for block in GRASS..=CHEST {
+        if let Some(name) = block_item_name(block) {
+            assert_eq!(item_block(name), Some(block));
+        }
+    }
+    assert_eq!(block_item_name(AIR), None);
+    assert_eq!(block_item_name(WATER), None);
+    assert_eq!(item_block("Field supplies"), None);
+}
+
+#[test]
 fn inventory_slot_commands_roundtrip() {
     use protocol::*;
     for command in [

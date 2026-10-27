@@ -39,6 +39,7 @@ func run() -> void:
 	root.add_child(scene)
 	current_scene = scene
 	scene.set_process(false)
+	scene._focus_gained()
 	scene.bridge.set_identity_path(path + ".client.uuid")
 	scene.hud.menu.loading_settings = true
 	scene._singleplayer()
@@ -100,6 +101,7 @@ func run() -> void:
 	key.keycode = KEY_ESCAPE
 	scene._input(key)
 	check(not scene.hud.container_open and not scene.hud.menu.visible,"Escape closes chest before opening game menu")
+	check(scene.captured,"closing chest automatically recaptures mouse")
 	await settle(func(): return scene.state.container.is_empty())
 	check(await open_chest(),"closed chest can reopen")
 	scene._focus_lost()

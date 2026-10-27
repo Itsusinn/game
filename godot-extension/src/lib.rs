@@ -66,6 +66,33 @@ impl GameBridge {
     }
 
     #[func]
+    fn edit_block(&mut self, yaw: f32, pitch: f32, place: bool) {
+        self.session.edit_block(yaw, pitch, place);
+    }
+
+    #[func]
+    fn block_target(&self, yaw: f32, pitch: f32) -> VarDictionary {
+        let m = &self.session.model;
+        if !m.ready || self.session.demo {
+            return VarDictionary::new();
+        }
+        self.session
+            .block_target(yaw, pitch)
+            .map_or_else(VarDictionary::new, |p| {
+                vdict! { "position" => Vector3i::new(p[0],p[1],p[2]),
+                "name" => protocol::block_item_name(m.terrain.get(p)).unwrap_or("") }
+            })
+    }
+
+    #[func]
+    fn take_dirty_chunks(&mut self) -> Array<Vector3i> {
+        std::mem::take(&mut self.session.model.dirty_chunks)
+            .into_iter()
+            .map(|p| Vector3i::new(p[0], p[1], p[2]))
+            .collect()
+    }
+
+    #[func]
     fn container_target(&self, yaw: f32, pitch: f32) -> VarDictionary {
         let m = &self.session.model;
         if self.session.demo || !m.ready {

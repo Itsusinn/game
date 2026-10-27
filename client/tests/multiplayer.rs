@@ -48,6 +48,131 @@ async fn login_uuid(
 }
 
 #[tokio::test]
+async fn block_edits_reach_both_clients_and_consume_the_selected_stack() {
+    let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+    let address = endpoint.local_addr().unwrap();
+    let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
+    let (stop, stopped) = oneshot::channel();
+    let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
+        let _ = stopped.await;
+    }));
+    let (_e1, c1) = connect_endpoint(address, cert.clone()).await.unwrap();
+    let (mut s1, mut r1) = c1.open_bi().await.unwrap();
+    login(&mut s1, &mut r1, "Builder").await;
+    let initial = snapshot(&mut r1, 0).await;
+    let (_e2, c2) = connect_endpoint(address, cert).await.unwrap();
+    let (mut s2, mut r2) = c2.open_bi().await.unwrap();
+    login(&mut s2, &mut r2, "Observer").await;
+    snapshot(&mut r2, 0).await;
+    let feet = initial.body.position;
+    // Mine beside the player, keeping the authoritative eye stationary.
+    let target = [
+        feet[0].floor() as i32 + 1,
+        feet[1].round() as i32 - 1,
+        feet[2].floor() as i32,
+    ];
+    let initial_offset: [f32; 3] = std::array::from_fn(|i| {
+        target[i] as f32 + 0.5
+            - feet[i]
+            - if i == 1 {
+                game_simulation::EYE_HEIGHT
+            } else {
+                0.0
+            }
+    });
+    let initial_yaw = initial_offset[0].atan2(-initial_offset[2]);
+    let initial_pitch = initial_offset[1].atan2(initial_offset[0].hypot(initial_offset[2]));
+    let expected = manager.lock().await.terrain.get(target);
+    write_message(
+        &mut s1,
+        &ClientMessage::EditBlock(BlockEdit {
+            target,
+            expected,
+            yaw: initial_yaw,
+            pitch: initial_pitch,
+            place: false,
+            slot: 0,
+            inventory_revision: initial.inventory.revision,
+        }),
+    )
+    .await
+    .unwrap();
+    async fn changed(recv: &mut quinn::RecvStream, cell: [i32; 3], block: u8) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let message = read_message(recv).await.unwrap();
+                if let ServerMessage::World3d(s) = &message {
+                    assert!(
+                        s.container_error.is_empty(),
+                        "edit rejected for {cell:?}: {}",
+                        s.container_error
+                    );
+                }
+                if let ServerMessage::Chunk3d { origin, blocks } = message {
+                    let mut map = game_simulation::grid::Grid::unknown();
+                    if map.apply_chunk(origin, &blocks) && map.get(cell) == block {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("terrain edit did not reach peer");
+    }
+    changed(&mut r1, target, AIR).await;
+    changed(&mut r2, target, AIR).await;
+    let mined = snapshot(&mut r1, 0).await;
+    assert_eq!(
+        mined.inventory.slots[0].as_ref().unwrap().name,
+        block_item_name(expected).unwrap()
+    );
+    assert_eq!(mined.inventory.slots[0].as_ref().unwrap().quantity, 1);
+    tokio::time::sleep(Duration::from_millis(240)).await;
+    let current = snapshot(&mut r1, 0).await;
+    let anchor = [target[0], target[1] - 1, target[2]];
+    let eye = [
+        current.body.position[0],
+        current.body.position[1] + game_simulation::EYE_HEIGHT,
+        current.body.position[2],
+    ];
+    let offset: [f32; 3] = std::array::from_fn(|i| anchor[i] as f32 + 0.5 - eye[i]);
+    let yaw = offset[0].atan2(-offset[2]);
+    let pitch = offset[1].atan2(offset[0].hypot(offset[2]));
+    let (hit, expected_anchor) = {
+        let w = manager.lock().await;
+        (
+            game_simulation::targeting::target_block(&w.terrain, current.body.position, yaw, pitch)
+                .unwrap(),
+            w.terrain.get(anchor),
+        )
+    };
+    assert_eq!(hit.position, anchor);
+    let placed = std::array::from_fn(|i| hit.position[i] + hit.normal[i]);
+    write_message(
+        &mut s1,
+        &ClientMessage::EditBlock(BlockEdit {
+            target: anchor,
+            expected: expected_anchor,
+            yaw,
+            pitch,
+            place: true,
+            slot: 0,
+            inventory_revision: current.inventory.revision,
+        }),
+    )
+    .await
+    .unwrap();
+    changed(&mut r1, placed, expected).await;
+    changed(&mut r2, placed, expected).await;
+    assert!(snapshot(&mut r1, 0).await.inventory.is_empty());
+    assert_eq!(manager.lock().await.terrain.get(placed), expected);
+    c1.close(0u32.into(), b"done");
+    c2.close(0u32.into(), b"done");
+    stop.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn stable_uuid_reconnects_after_rename_and_rejects_duplicate_online_identity() {
     let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
     let address = endpoint.local_addr().unwrap();

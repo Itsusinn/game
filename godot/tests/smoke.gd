@@ -15,6 +15,7 @@ func run() -> void:
 	root.add_child(scene)
 	current_scene = scene
 	scene.set_process(false)
+	scene._focus_gained() # Headless windows have no OS focus; simulate the focused game.
 	scene.hud.menu.loading_settings = true # Tests must not overwrite user preferences.
 	check(scene.hud.menu.visible and scene.hud.menu.page == "home", "startup shows main menu")
 	scene.hud.menu.show_page("multiplayer")
@@ -40,22 +41,30 @@ func run() -> void:
 	scene._process(0.0)
 	check(scene.terrain_root.get_child_count() > 0,"Godot terrain scene built")
 	check(scene.entities.size() == 1 and scene.item_nodes.size() == 1,"actors and ground items displayed")
-	scene.captured = true
-	scene.focused = true
+	check(scene.captured,"entering gameplay automatically captures mouse")
+	if DisplayServer.get_name() != "headless":
+		check(Input.mouse_mode == Input.MOUSE_MODE_CAPTURED,"native window captures mouse without a click")
 	Input.action_press("forward")
 	scene._process(0.05)
 	check(scene.state.body_position.z < start.z,"Godot input reaches Rust prediction")
 	scene._focus_lost()
 	check(not scene.captured and not Input.is_action_pressed("forward"),"focus loss releases mouse and movement")
+	scene._process(0.0)
+	check(not scene.captured,"unfocused gameplay does not recapture mouse")
+	scene._focus_gained()
+	check(scene.captured,"returning to gameplay focus recaptures mouse")
 	var key := InputEventKey.new()
 	key.pressed = true
 	key.keycode = KEY_TAB
 	scene._input(key)
 	scene._process(0.05)
-	check(scene.hud.inventory_open and scene.hud.panel.visible,"inventory UI opens and releases movement")
+	check(scene.hud.inventory_open and scene.hud.panel.visible and not scene.captured,"inventory UI opens and releases movement")
+	scene._focus_lost()
+	scene._focus_gained()
+	check(not scene.captured,"inventory retains free cursor after window focus returns")
 	scene.hud.chat.grab_focus()
 	scene._input(key)
-	check(not scene.hud.inventory_open,"Tab closes inventory even with a focused text field")
+	check(not scene.hud.inventory_open and scene.captured,"Tab closes focused inventory and recaptures mouse")
 	scene.hud.fov_slider.value = 85
 	check(scene.camera.fov == 85,"FOV control updates camera")
 	key.keycode = KEY_ESCAPE
@@ -65,6 +74,11 @@ func run() -> void:
 	scene._process(0.0)
 	check(scene.hud.menu.page == "pause" and scene.hud.menu.visible, "Escape opens game menu")
 	check(not scene.captured and not scene.attack and not Input.is_action_pressed("forward"), "game menu clears held movement and attack")
+	if DisplayServer.get_name() != "headless":
+		check(Input.mouse_mode == Input.MOUSE_MODE_VISIBLE,"native window releases mouse for pause menu")
+	scene._focus_lost()
+	scene._focus_gained()
+	check(not scene.captured,"pause menu retains free cursor after window focus returns")
 	var click := InputEventMouseButton.new()
 	click.button_index = MOUSE_BUTTON_LEFT
 	click.pressed = true
@@ -74,7 +88,9 @@ func run() -> void:
 	scene._input(key)
 	check(scene.hud.menu.page == "pause", "settings Escape returns to game menu")
 	scene._input(key)
-	check(not scene.hud.menu.visible, "second Escape resumes gameplay")
+	check(not scene.hud.menu.visible and scene.captured, "second Escape resumes gameplay and captures mouse")
+	if DisplayServer.get_name() != "headless":
+		check(Input.mouse_mode == Input.MOUSE_MODE_CAPTURED,"native window recaptures mouse after resume")
 	scene._disconnect_game()
 	scene._process(0.0)
 	check(not scene.state.ready and scene.entities.is_empty(),"disconnect clears scene and session")
@@ -92,6 +108,7 @@ func run() -> void:
 		await create_timer(0.02).timeout
 	check(scene.state.ready and not scene.state.demo and scene.state.local_running, "single-player menu starts embedded authority")
 	check(not scene.hud.menu.visible, "successful connection dismisses loading menu")
+	check(scene.captured, "successful connection automatically captures mouse")
 	scene._leave_game(false)
 	for i in range(300):
 		scene._process(0.0)
@@ -100,6 +117,7 @@ func run() -> void:
 	check(not scene.state.local_running and scene.pending_action.is_empty(), "return home waits for local authority shutdown")
 	check(FileAccess.file_exists(isolated_save), "return home saves isolated map")
 	check(scene.hud.menu.visible and scene.hud.menu.page == "home", "return home restores main menu")
+	check(not scene.captured, "return home releases mouse")
 	scene._connect_game("invalid address", "Test", "missing.der")
 	scene._process(0.0)
 	check(scene.hud.menu.page == "home" and not scene.entering_game and not scene.hud.menu.feedback.text.is_empty(), "connection failure returns to menu with diagnostic")

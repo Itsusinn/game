@@ -1,10 +1,11 @@
 use game_simulation::{grid::Grid, step_with_actors};
 use protocol::*;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 pub struct Client3d {
     pub terrain: Grid,
     pub revision: u64,
+    pub dirty_chunks: BTreeSet<[i32; 3]>,
     pub player_id: u32,
     pub spawn_rotation: [f32; 2],
     pub body: Body,
@@ -25,6 +26,7 @@ impl Default for Client3d {
         Self {
             terrain: Grid::unknown(),
             revision: 0,
+            dirty_chunks: BTreeSet::new(),
             player_id: 0,
             spawn_rotation: [0.0, -0.1],
             body: Body::default(),
@@ -57,6 +59,17 @@ impl Client3d {
             ServerMessage::Chunk3d { origin, blocks } => {
                 if self.terrain.apply_chunk(origin, &blocks) {
                     self.revision += 1;
+                    self.dirty_chunks.insert(origin);
+                    // Adjacent meshes share boundary face visibility.
+                    for axis in 0..3 {
+                        for step in [-CHUNK_EDGE, CHUNK_EDGE] {
+                            let mut adjacent = origin;
+                            adjacent[axis] += step;
+                            if Grid::index(adjacent).is_some() {
+                                self.dirty_chunks.insert(adjacent);
+                            }
+                        }
+                    }
                 }
             }
             ServerMessage::World3d(s) => {
@@ -176,5 +189,23 @@ mod tests {
         assert_eq!(m.revision, revision);
         assert!(m.terrain.solid([10, 10, 10]));
         assert!(!m.ready);
+    }
+
+    #[test]
+    fn changed_chunk_updates_collision_and_invalidates_adjacent_faces_only() {
+        let mut m = model();
+        m.terrain.set([15, 2, 8], STONE);
+        let mut updated = m.terrain.clone();
+        updated.set([15, 2, 8], AIR);
+        m.apply(ServerMessage::Chunk3d {
+            origin: [0, 0, 0],
+            blocks: updated.chunk([0, 0, 0]),
+        });
+        assert!(!m.terrain.solid([15, 2, 8]));
+        assert_eq!(
+            m.dirty_chunks,
+            BTreeSet::from([[0, 0, 0], [16, 0, 0], [0, 16, 0], [0, 0, 16]])
+        );
+        assert!(!m.dirty_chunks.contains(&[48, 0, 48]));
     }
 }

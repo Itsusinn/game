@@ -1,4 +1,9 @@
 extends Control
+const Palette = preload("res://src/interface_theme.gd")
+const Wood = preload("res://materials/textures/weathered_brown_planks_diff_1k.jpg")
+const Stone = preload("res://materials/textures/stone_brick_wall_001_diff_1k.jpg")
+const Grass = preload("res://materials/textures/leafy_grass_diff_1k.jpg")
+const Bark = preload("res://materials/textures/bark_brown_02_diff_1k.jpg")
 signal activated(area: String, index: int, mouse_button: int, quick: bool)
 signal dropped(area: String, index: int, payload: Dictionary)
 var area := "player"
@@ -25,22 +30,28 @@ func update_slot(value: Dictionary, active: bool, chosen: bool, data: Dictionary
 
 func _draw() -> void:
 	var frame := Rect2(Vector2.ZERO,size)
-	draw_rect(frame,Color("111820"))
-	draw_rect(frame.grow(-2),Color("37434d"))
-	draw_rect(frame.grow(-5),Color("202a32"))
-	if frame.has_point(get_local_mouse_position()): draw_rect(frame.grow(-5),Color(1,1,1,0.08))
-	if selected: draw_rect(frame.grow(-1),Color("ffc06b"),false,3)
-	if picked: draw_rect(frame.grow(-4),Color("72cce0"),false,2)
+	draw_rect(frame,Color(0.045,0.055,0.045,0.8))
+	draw_rect(frame.grow(-1),Color(0.6,0.65,0.55,0.26),false,1)
+	if frame.has_point(get_local_mouse_position()): draw_rect(frame.grow(-2),Color(1,1,1,0.06))
+	if selected:
+		draw_rect(frame.grow(-1),Palette.ACCENT,false,1)
+		draw_rect(Rect2(1,size.y-3,size.x-2,2),Palette.ACCENT)
+	if picked: draw_rect(frame.grow(-3),Palette.BLUE,false,1)
 	var font := ThemeDB.fallback_font
 	if not item.is_empty():
-		# Original supply-satchel icon, shared by the inventory and hotbar.
 		var center := size * 0.5
-		draw_rect(Rect2(center-Vector2(14,15),Vector2(28,29)),Color("1a211c"))
-		draw_rect(Rect2(center-Vector2(12,17),Vector2(24,27)),Color("b4a478"))
-		draw_rect(Rect2(center-Vector2(12,17),Vector2(24,6)),Color("d5c393"))
-		draw_rect(Rect2(center-Vector2(8,17),Vector2(4,27)),Color("66664b"))
-		draw_rect(Rect2(center+Vector2(5,-17),Vector2(4,27)),Color("66664b"))
-		draw_rect(Rect2(center-Vector2(3,4),Vector2(7,8)),Color("ebe4bd"))
+		var texture: Texture2D = {"石块":Stone,"草方块":Grass,"泥土":Grass,"树叶":Grass,"原木":Bark}.get(item.name,Wood)
+		var tint := Color.WHITE
+		if item.name == "泥土": tint = Color("8d6948")
+		elif item.name == "树叶": tint = Color("749a65")
+		draw_rect(Rect2(center-Vector2(16,13),Vector2(33,29)),Color(0,0,0,0.45))
+		draw_texture_rect(texture,Rect2(center-Vector2(16,16),Vector2(32,28)),false,tint)
+		draw_rect(Rect2(center-Vector2(16,16),Vector2(32,28)),Color("797468"),false,1)
+		if item.name not in ["石块","草方块","泥土","树叶","原木","木板"]:
+			draw_line(center-Vector2(15,8),center+Vector2(15,-8),Color("363a32"),2)
+			draw_rect(Rect2(center-Vector2(11,15),Vector2(3,26)),Color("4a4f46"))
+			draw_rect(Rect2(center+Vector2(8,-15),Vector2(3,26)),Color("4a4f46"))
+			draw_rect(Rect2(center-Vector2(2,10),Vector2(4,6)),Palette.MUTED)
 		var count := str(item.quantity)
 		var width := font.get_string_size(count,HORIZONTAL_ALIGNMENT_LEFT,-1,16).x
 		draw_string_outline(font,Vector2(size.x-width-4,size.y-5),count,HORIZONTAL_ALIGNMENT_LEFT,-1,16,4,Color("101318"))

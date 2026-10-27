@@ -76,6 +76,10 @@ godot-multiplayer:
 godot-containers:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 containers
 
+# 使用隔离世界验证方块破坏、放置、UI 输入隔离和保存重开
+godot-editing:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 editing
+
 # 导出 Windows 调试客户端
 export-debug:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 export-debug

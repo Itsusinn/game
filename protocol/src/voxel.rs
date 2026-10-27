@@ -14,6 +14,37 @@ pub const CHEST: u8 = 8;
 pub const CONTAINER_SLOTS: usize = 24;
 pub const CONTAINER_STACK_LIMIT: u32 = 999;
 pub const CONTAINER_REACH: f32 = 3.5;
+pub const BLOCK_REACH: f32 = 4.5;
+
+/// Names are also the persistent item identifiers used by the existing inventory.
+pub fn block_item_name(block: u8) -> Option<&'static str> {
+    match block {
+        GRASS => Some("草方块"),
+        DIRT => Some("泥土"),
+        STONE => Some("石块"),
+        WOOD => Some("原木"),
+        LEAVES => Some("树叶"),
+        PLANK => Some("木板"),
+        CHEST => Some("箱子"),
+        _ => None,
+    }
+}
+
+pub fn item_block(name: &str) -> Option<u8> {
+    (GRASS..=CHEST).find(|&block| block_item_name(block) == Some(name))
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BlockEdit {
+    /// The first block hit by the crosshair, not an arbitrary placement position.
+    pub target: [i32; 3],
+    pub expected: u8,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub place: bool,
+    pub slot: u8,
+    pub inventory_revision: u64,
+}
 
 /// Container identity is its voxel coordinate, independent of scene/ECS IDs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

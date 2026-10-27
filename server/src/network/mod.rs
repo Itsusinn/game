@@ -248,6 +248,9 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
                 ClientMessage::Inventory(command) => {
                     wm.lock().await.inventory_command(player_id, command);
                 }
+                ClientMessage::EditBlock(command) => {
+                    wm.lock().await.edit_block(player_id, command);
+                }
                 ClientMessage::Ping { seq } => {
                     let pong = ServerMessage::Pong { seq };
                     let data = rmp_serde::to_vec(&pong)?;

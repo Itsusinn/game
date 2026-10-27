@@ -1,6 +1,7 @@
 //! Deterministic, host-independent character movement shared by authority and prediction.
 use protocol::{Body, PlayerInput};
 pub mod grid;
+pub mod targeting;
 
 pub const DT: f32 = 1.0 / 30.0;
 pub const RADIUS: f32 = 0.29;

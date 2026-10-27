@@ -1,4 +1,5 @@
 mod containers;
+mod editing;
 mod inventory;
 mod persistence;
 pub use persistence::lock_world;
@@ -8,7 +9,7 @@ use game_simulation::{clear_line, distance, grid::Grid, overlaps, step_with_acto
 use protocol::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     path::Path,
 };
 use tokio::sync::mpsc;
@@ -27,6 +28,7 @@ struct Player {
     inventory: PlayerInventory,
     attack_tick: u64,
     open_container: Option<[i32; 3]>,
+    edit_after: u64,
     container_error: String,
 }
 struct Npc {
@@ -44,6 +46,7 @@ pub struct VoxelWorld {
     log: Vec<LogEntry>,
     next_id: u32,
     tick: u64,
+    dirty_chunks: BTreeSet<[i32; 3]>,
     containers: BTreeMap<[i32; 3], ContainerSnapshot>,
     saved_players: BTreeMap<[u8; 16], crate::player_data::PlayerData>,
     save_path: Option<std::path::PathBuf>,
@@ -88,6 +91,7 @@ impl VoxelWorld {
             log: vec![],
             next_id: 1,
             tick: 0,
+            dirty_chunks: BTreeSet::new(),
             containers,
             saved_players: BTreeMap::new(),
             save_path: None,
@@ -137,6 +141,7 @@ impl VoxelWorld {
                 inventory: PlayerInventory::default(),
                 attack_tick: 0,
                 open_container: None,
+                edit_after: 0,
                 container_error: String::new(),
             },
         );
@@ -213,6 +218,7 @@ impl VoxelWorld {
     }
     pub fn tick(&mut self) {
         self.tick += 1;
+        self.broadcast_terrain();
         let mut actions = Vec::new();
         let mut occupants: Vec<_> = self
             .players

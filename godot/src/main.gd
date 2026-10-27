@@ -8,6 +8,7 @@ var hud: CanvasLayer
 var environment: Environment
 var sun: DirectionalLight3D
 var terrain_root: Node3D
+var terrain_nodes: Dictionary = {}
 var entities: Dictionary = {}
 var item_nodes: Dictionary = {}
 var actor_meshes: Array[ArrayMesh] = []
@@ -76,7 +77,8 @@ func _ready() -> void:
 	state = bridge.snapshot()
 	hud.update_state(state, captured)
 	get_window().focus_exited.connect(_focus_lost)
-	get_window().focus_entered.connect(func(): focused = true)
+	get_window().focus_entered.connect(_focus_gained)
+	focused = get_window().has_focus()
 
 func _parse_options(args: PackedStringArray) -> Dictionary:
 	var result := {}
@@ -111,6 +113,11 @@ func _setup_input() -> void:
 func _setup_world() -> void:
 	material = ShaderMaterial.new()
 	material.shader = MaterialShader
+	var surfaces := {"wood":"weathered_brown_planks", "stone":"stone_brick_wall_001", "grass":"leafy_grass", "bark":"bark_brown_02"}
+	var maps := {"color":"diff", "normal":"nor_gl", "rough":"rough"}
+	for surface in surfaces:
+		for map in maps:
+			material.set_shader_parameter("%s_%s" % [surface,map],load("res://materials/textures/%s_%s_1k.jpg" % [surfaces[surface],maps[map]]))
 	terrain_root = Node3D.new()
 	terrain_root.name = "TerrainChunks"
 	add_child(terrain_root)
@@ -124,10 +131,10 @@ func _setup_world() -> void:
 	add_child(camera)
 	sun = DirectionalLight3D.new()
 	sun.name = "Sun"
-	sun.rotation_degrees = Vector3(-48,-35,0)
-	sun.light_color = Color(1.0,0.94,0.82)
-	sun.light_energy = 0.75
-	sun.light_angular_distance = 0.6
+	sun.rotation_degrees = Vector3(-38,-35,0)
+	sun.light_color = Color(1.0,0.975,0.92)
+	sun.light_energy = 1.0
+	sun.light_angular_distance = 1.2
 	sun.shadow_enabled = true
 	sun.directional_shadow_max_distance = 100
 	add_child(sun)
@@ -135,15 +142,15 @@ func _setup_world() -> void:
 	environment.background_mode = Environment.BG_SKY
 	var sky := Sky.new()
 	var sky_material := ProceduralSkyMaterial.new()
-	sky_material.sky_top_color = Color("8aaac1")
-	sky_material.sky_horizon_color = Color("c8d6d4")
-	sky_material.ground_horizon_color = Color("c8d6d4")
-	sky_material.ground_bottom_color = Color("52604c")
+	sky_material.sky_top_color = Color("7896b3")
+	sky_material.sky_horizon_color = Color("bfcbd1")
+	sky_material.ground_horizon_color = Color("bfcbd1")
+	sky_material.ground_bottom_color = Color("424b39")
 	sky.sky_material = sky_material
 	environment.sky = sky
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	environment.ambient_light_energy = 0.45
-	environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	environment.ambient_light_energy = 0.3
+	environment.tonemap_mode = Environment.TONE_MAPPER_ACES
 	environment.sdfgi_enabled = true
 	environment.sdfgi_min_cell_size = 0.35
 	environment.sdfgi_cascades = 4
@@ -151,10 +158,10 @@ func _setup_world() -> void:
 	environment.sdfgi_bounce_feedback = 0.3
 	environment.ssao_enabled = true
 	environment.ssao_radius = 0.7
-	environment.ssao_intensity = 0.9
+	environment.ssao_intensity = 1.1
 	environment.fog_enabled = true
-	environment.fog_light_color = Color("b8cbce")
-	environment.fog_density = 0.0025
+	environment.fog_light_color = Color("bfcbd1")
+	environment.fog_density = 0.0015
 	var world := WorldEnvironment.new()
 	world.environment = environment
 	add_child(world)
@@ -210,9 +217,7 @@ func _resume_game() -> void:
 	var owner := get_viewport().gui_get_focus_owner()
 	if owner: owner.release_focus()
 	_release_mouse()
-	if focused:
-		captured = true
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	_sync_mouse_capture()
 
 func _leave_game(quit_game: bool) -> void:
 	if not pending_action.is_empty(): return
@@ -247,6 +252,20 @@ func _focus_lost() -> void:
 	_close_container()
 	_release_mouse()
 
+func _focus_gained() -> void:
+	focused = true
+	_sync_mouse_capture()
+
+func _sync_mouse_capture() -> void:
+	var owner := get_viewport().gui_get_focus_owner()
+	var ui_focused := owner != null and owner.is_visible_in_tree()
+	var should_capture: bool = focused and state.get("ready",false) and pending_action.is_empty() and not entering_game and not hud.menu.visible and not hud.inventory_open and not hud.container_wanted and not hud.container_open and not ui_focused
+	if should_capture and not captured:
+		captured = true
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	elif not should_capture and captured:
+		_release_mouse()
+
 func _close_container() -> void:
 	if hud.container_wanted or hud.container_open: bridge.close_container()
 	hud.container_wanted = false
@@ -258,6 +277,9 @@ func _close_inventory() -> void:
 	_close_container()
 	hud.inventory_open = false
 	_release_mouse()
+	var owner := get_viewport().gui_get_focus_owner()
+	if owner: owner.release_focus()
+	_sync_mouse_capture()
 
 func _select_hotbar(slot: int) -> void:
 	hotbar_cursor = posmod(slot,9)
@@ -303,6 +325,7 @@ func _input(event: InputEvent) -> void:
 			_release_mouse()
 			var focus_owner := get_viewport().gui_get_focus_owner()
 			if focus_owner: focus_owner.release_focus()
+			_sync_mouse_capture()
 			get_viewport().set_input_as_handled()
 		elif captured and focused and not hud.menu.visible and not hud.inventory_open and not hud.container_open:
 			for i in range(9):
@@ -311,7 +334,7 @@ func _input(event: InputEvent) -> void:
 					get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
-	if hud.menu.visible: return
+	if not captured or not focused or hud.menu.visible: return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if captured and event.physical_keycode == KEY_F: attack = true
 		elif captured and event.physical_keycode == KEY_G: pickup = true
@@ -320,16 +343,14 @@ func _unhandled_input(event: InputEvent) -> void:
 		yaw = fposmod(yaw + event.relative.x * sensitivity,TAU)
 		pitch = clampf(pitch - event.relative.y * sensitivity,-1.45,1.45)
 	if event is InputEventMouseButton and event.pressed:
-		if event.button_index == MOUSE_BUTTON_LEFT and state.get("ready",false) and not hud.inventory_open and not hud.container_wanted and not hud.container_open:
-			if captured: attack = true
-			else:
-				captured = true
-				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		if event.button_index in [MOUSE_BUTTON_LEFT,MOUSE_BUTTON_RIGHT] and state.get("ready",false) and not hud.inventory_open and not hud.container_wanted and not hud.container_open:
+			bridge.edit_block(yaw,pitch,event.button_index == MOUSE_BUTTON_RIGHT)
 			get_viewport().set_input_as_handled()
 		elif captured and event.button_index == MOUSE_BUTTON_WHEEL_UP: _select_hotbar(hotbar_cursor-1)
 		elif captured and event.button_index == MOUSE_BUTTON_WHEEL_DOWN: _select_hotbar(hotbar_cursor+1)
 
 func _process(delta: float) -> void:
+	_sync_mouse_capture()
 	var controls := {"yaw": yaw, "pitch": pitch}
 	if captured and focused and not hud.inventory_open and not hud.menu.visible and not hud.container_wanted and not hud.container_open:
 		controls.forward = Input.get_action_strength("forward") - Input.get_action_strength("back")
@@ -349,6 +370,7 @@ func _process(delta: float) -> void:
 		_close_container()
 	if not state.ready: _close_container()
 	hud.container_target = bridge.container_target(yaw,pitch) if captured else {}
+	hud.block_target = bridge.block_target(yaw,pitch) if captured else {}
 	if not pending_action.is_empty():
 		hud.menu.feedback.text = state.status
 		if not state.local_running and not state.shutdown_pending:
@@ -375,7 +397,7 @@ func _process(delta: float) -> void:
 		hud.menu.show_page("home")
 		hud.menu.feedback.text = state.status
 	was_ready = state.ready
-	if not state.ready and captured: _release_mouse()
+	_sync_mouse_capture()
 	var next_revision := Vector2i(state.generation,state.revision)
 	if revision.x != next_revision.x:
 		_clear_world()
@@ -407,6 +429,7 @@ func _process(delta: float) -> void:
 
 func _clear_world() -> void:
 	hotbar_cursor = 0
+	terrain_nodes.clear()
 	for child in terrain_root.get_children():
 		terrain_root.remove_child(child)
 		child.queue_free()
@@ -417,19 +440,22 @@ func _clear_world() -> void:
 	revision = Vector2i(state.generation,-1)
 
 func _rebuild_terrain() -> void:
-	for child in terrain_root.get_children():
-		terrain_root.remove_child(child)
-		child.queue_free()
-	for y in range(0,32,16):
-		for z in range(0,64,16):
-			for x in range(0,64,16):
-				var mesh := _mesh(bridge.chunk_geometry(Vector3i(x,y,z)))
-				if mesh.get_surface_count() == 0: continue
-				var node := MeshInstance3D.new()
-				node.name = "Chunk_%d_%d_%d" % [x,y,z]
-				node.mesh = mesh
-				node.gi_mode = GeometryInstance3D.GI_MODE_STATIC
-				terrain_root.add_child(node)
+	for origin in bridge.take_dirty_chunks():
+		var mesh := _mesh(bridge.chunk_geometry(origin))
+		var node: MeshInstance3D = terrain_nodes.get(origin)
+		if mesh.get_surface_count() == 0:
+			if is_instance_valid(node):
+				terrain_root.remove_child(node)
+				node.queue_free()
+			terrain_nodes.erase(origin)
+			continue
+		if not is_instance_valid(node):
+			node = MeshInstance3D.new()
+			node.name = "Chunk_%d_%d_%d" % [origin.x,origin.y,origin.z]
+			node.gi_mode = GeometryInstance3D.GI_MODE_STATIC
+			terrain_root.add_child(node)
+			terrain_nodes[origin] = node
+		node.mesh = mesh
 
 func _update_entities() -> void:
 	var live := {}

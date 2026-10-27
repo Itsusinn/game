@@ -26,21 +26,19 @@ var container_open := false
 var container_wanted := false
 var container_target: Dictionary = {}
 var interaction_hint: Label
+var block_target: Dictionary = {}
 var menu: Control
 var top: PanelContainer
-var bottom: PanelContainer
 
 var panel: PanelContainer
 var address: LineEdit
 var player_name: LineEdit
 var certificate: LineEdit
 var chat: LineEdit
-var status: Label
 var health: Label
 var coordinates: Label
 var journal: RichTextLabel
 var reticle: Label
-var hint: Label
 var fov_slider: HSlider
 var gi_toggle: CheckButton
 var inventory_open := false
@@ -54,22 +52,20 @@ func _ready() -> void:
 	root.theme = theme
 	add_child(root)
 	top = PanelContainer.new()
-	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	top.offset_left = 18
+	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	top.offset_left = -338
 	top.offset_right = -18
 	top.offset_top = 16
 	top.offset_bottom = 80
-	var bar_style := Palette.box(Color(0.055,0.065,0.08,0.92), 14)
+	var bar_style := Palette.box(Color(0.045,0.055,0.045,0.72), 14)
 	bar_style.border_width_bottom = 1
-	bar_style.border_color = Color(1,1,1,0.2)
+	bar_style.border_color = Color(0.8,0.82,0.72,0.16)
 	top.add_theme_stylebox_override("panel",bar_style)
 	root.add_child(top)
-	var title := HBoxContainer.new()
-	title.add_theme_constant_override("separation", 30)
-	top.add_child(title)
-	label(title, "方块边境", 25).add_theme_font_override("font",Palette.display_font())
-	label(title, "/  FIELD OPERATIONS", 14).modulate = Palette.MUTED
-	health = label(title, "", 17)
+	var vitals := HBoxContainer.new()
+	vitals.add_theme_constant_override("separation", 30)
+	top.add_child(vitals)
+	health = label(vitals, "", 17)
 	health.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	health.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	health.add_theme_font_override("font",Palette.technical_font())
@@ -79,19 +75,7 @@ func _ready() -> void:
 	health_bar.show_percentage = false
 	health_bar.add_theme_stylebox_override("background",Palette.box(Color("515b64"),0))
 	health_bar.add_theme_stylebox_override("fill",Palette.box(Palette.ACCENT,0))
-	title.add_child(health_bar)
-	bottom = PanelContainer.new()
-	bottom.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
-	bottom.offset_left = 18
-	bottom.offset_right = 310
-	bottom.offset_top = -62
-	bottom.offset_bottom = -16
-	bottom.add_theme_stylebox_override("panel",Palette.box(Color(0.055,0.065,0.08,0.92),12))
-	root.add_child(bottom)
-	var footer := VBoxContainer.new()
-	bottom.add_child(footer)
-	status = label(footer, "准备就绪", 14)
-	status.modulate = Palette.ACCENT
+	vitals.add_child(health_bar)
 	panel = ContainerPanel.new()
 	root.add_child(panel)
 	container_panel = panel
@@ -113,10 +97,6 @@ func _ready() -> void:
 	reticle.add_theme_color_override("font_color",Color.WHITE)
 	reticle.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	reticle.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hint = label(root, "点击画面，开始行动", 16)
-	hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	hint.position += Vector2(-90, 38)
-	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	interaction_hint = label(root, "E  打开箱子", 17)
 	interaction_hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	interaction_hint.position += Vector2(-55, 38)
@@ -191,17 +171,19 @@ func update_state(state: Dictionary, captured: bool) -> void:
 	var held: Dictionary = state.inventory_slots[state.selected_slot]
 	held_name.text = "空手" if held.is_empty() else held.name
 	top.visible = state.ready and not menu.visible
-	bottom.visible = top.visible and not panel.visible
 	health.text = "HP   %03d / 100" % state.hp if state.ready else ""
 	health_bar.value = state.hp
-	status.text = "离线漫游  /  EXPLORATION" if state.demo else ("单人行动  /  SOLO" if state.get("local_running",false) else "多人行动  /  MULTIPLAYER")
-	if not state.ready: status.text = state.status
-	elif not state.get("container_error", "").is_empty(): status.text = state.container_error
 	var p: Vector3 = state.body_position
 	coordinates.text = "X %.1f   Y %.1f   Z %.1f" % [p.x, p.y, p.z]
 	var log_text := "\n".join(PackedStringArray(state.journal))
 	if journal.text != log_text: journal.text = log_text
 	chat.editable = state.ready and not state.demo
 	reticle.visible = state.ready and not panel.visible and not menu.visible and not container_open
-	hint.visible = state.ready and not captured and not panel.visible and not menu.visible and not container_open
-	interaction_hint.visible = captured and reticle.visible and not container_target.is_empty()
+	var hint := ""
+	if not state.container_error.is_empty(): hint = state.container_error
+	elif not block_target.is_empty():
+		hint = "%s  ·  左键破坏 / 右键放置" % block_target.name
+		if not container_target.is_empty(): hint += "  ·  E 打开"
+	interaction_hint.text = hint
+	interaction_hint.position.x = (get_viewport().get_visible_rect().size.x - interaction_hint.size.x) * 0.5
+	interaction_hint.visible = captured and reticle.visible and not hint.is_empty()

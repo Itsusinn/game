@@ -1,0 +1,98 @@
+[
+  {
+    "asset": "weathered_brown_planks",
+    "map": "Diffuse",
+    "file": "weathered_brown_planks_diff_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/weathered_brown_planks/weathered_brown_planks_diff_1k.jpg",
+    "md5": "e2fbdf7ed402e272e33e3f7ba707cf69",
+    "sha256": "94833feda44e025a9139f7b5723ea84e4f0258d3b54939a79e1013c133085e29"
+  },
+  {
+    "asset": "weathered_brown_planks",
+    "map": "nor_gl",
+    "file": "weathered_brown_planks_nor_gl_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/weathered_brown_planks/weathered_brown_planks_nor_gl_1k.jpg",
+    "md5": "1180a2ce3566529b25128252e02bd049",
+    "sha256": "8d38f02f121c0e58eaedc19cd668faea21381ae3ff4d5332cd90de75e6683393"
+  },
+  {
+    "asset": "weathered_brown_planks",
+    "map": "Rough",
+    "file": "weathered_brown_planks_rough_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/weathered_brown_planks/weathered_brown_planks_rough_1k.jpg",
+    "md5": "4893f3ee360a4e1e30b96a157e65e50a",
+    "sha256": "b80c45969d8299ca5f21de969f0269138a5e3e78e51fc911af809683d99c5bc9"
+  },
+  {
+    "asset": "stone_brick_wall_001",
+    "map": "Diffuse",
+    "file": "stone_brick_wall_001_diff_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/stone_brick_wall_001/stone_brick_wall_001_diff_1k.jpg",
+    "md5": "fe05d5a4be3e01e7d922e7e935d8dfd9",
+    "sha256": "15fb31a178401eda2a2b86da539fa39021a08c7a43e902af785f99e18cba6311"
+  },
+  {
+    "asset": "stone_brick_wall_001",
+    "map": "nor_gl",
+    "file": "stone_brick_wall_001_nor_gl_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/stone_brick_wall_001/stone_brick_wall_001_nor_gl_1k.jpg",
+    "md5": "a389d00861e02eef39967dde975a8af4",
+    "sha256": "7223aa10c71d38f313b63da8493a889208b020824ca691da5066c6c86125cc51"
+  },
+  {
+    "asset": "stone_brick_wall_001",
+    "map": "Rough",
+    "file": "stone_brick_wall_001_rough_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/stone_brick_wall_001/stone_brick_wall_001_rough_1k.jpg",
+    "md5": "dac1157e3105f9cd63df26d72873d538",
+    "sha256": "a3c5e22f46d32652a93ed1e4de15e7d307cb338ab96c9fc746cfb1620b7950a7"
+  },
+  {
+    "asset": "leafy_grass",
+    "map": "Diffuse",
+    "file": "leafy_grass_diff_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/leafy_grass/leafy_grass_diff_1k.jpg",
+    "md5": "0dbc071e91d6905edfcfbe8eb785a1ab",
+    "sha256": "cfa40bc9d9417d1852db8753a8d5917f110c40101179f63543c382e39bc05e4a"
+  },
+  {
+    "asset": "leafy_grass",
+    "map": "nor_gl",
+    "file": "leafy_grass_nor_gl_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/leafy_grass/leafy_grass_nor_gl_1k.jpg",
+    "md5": "8279e096e204ea326d57a318869f99df",
+    "sha256": "832328216adc0a7e1f70a31d5ee48c9ab7f2152d83816122736cf42ac4b2ebd6"
+  },
+  {
+    "asset": "leafy_grass",
+    "map": "Rough",
+    "file": "leafy_grass_rough_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/leafy_grass/leafy_grass_rough_1k.jpg",
+    "md5": "05f6bb1383e12b327727d313c5899cf2",
+    "sha256": "0c2a1d91aacb8e54a496051b59854e51e456fe858abeade778e308359ef16463"
+  },
+  {
+    "asset": "bark_brown_02",
+    "map": "Diffuse",
+    "file": "bark_brown_02_diff_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/bark_brown_02/bark_brown_02_diff_1k.jpg",
+    "md5": "6669cca520594bdca19f94084984ab72",
+    "sha256": "920fa0bed0c9d78c1d530e99795113afd532d7db746de440f4a85d7c83ed0f1a"
+  },
+  {
+    "asset": "bark_brown_02",
+    "map": "nor_gl",
+    "file": "bark_brown_02_nor_gl_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/bark_brown_02/bark_brown_02_nor_gl_1k.jpg",
+    "md5": "1cad3fe0349a44df2d4d1c2859c79920",
+    "sha256": "0d5e691e8ad8bcd093a3587887fda2a6b4a948b5708a4f256f7919584c6eb857"
+  },
+  {
+    "asset": "bark_brown_02",
+    "map": "Rough",
+    "file": "bark_brown_02_rough_1k.jpg",
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k/bark_brown_02/bark_brown_02_rough_1k.jpg",
+    "md5": "bbcde696e5b9418cdcb2abe638965417",
+    "sha256": "68125592de36e15bae7aa6db85c4d135aeb7e5653199ba226483a70f6d69837d"
+  }
+]

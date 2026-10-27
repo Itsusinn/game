@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers')]
+    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing')]
     [string]$Action = 'run',
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$GameArgs
@@ -42,6 +42,10 @@ Build-Extension $false
 if ($Action -eq 'build') { exit 0 }
 if ($Action -eq 'containers') {
     & $godotExe --headless --path godot --script res://tests/containers.gd
+    exit $LASTEXITCODE
+}
+if ($Action -eq 'editing') {
+    & $godotExe --headless --path godot --script res://tests/editing.gd
     exit $LASTEXITCODE
 }
 if ($Action -eq 'smoke') {

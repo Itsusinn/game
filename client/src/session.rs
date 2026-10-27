@@ -221,6 +221,43 @@ impl Session {
             pitch,
         )
     }
+    pub fn block_target(&self, yaw: f32, pitch: f32) -> Option<[i32; 3]> {
+        game_simulation::targeting::target_block(
+            &self.model.terrain,
+            self.model.body.position,
+            yaw,
+            pitch,
+        )
+        .map(|hit| hit.position)
+    }
+    pub fn edit_block(&mut self, yaw: f32, pitch: f32, place: bool) {
+        if !self.model.ready || self.demo {
+            return;
+        }
+        let Some(hit) = game_simulation::targeting::target_block(
+            &self.model.terrain,
+            self.model.body.position,
+            yaw,
+            pitch,
+        ) else {
+            self.model.container_error = "未瞄准可操作的方块。".into();
+            return;
+        };
+        let command = BlockEdit {
+            target: hit.position,
+            expected: self.model.terrain.get(hit.position),
+            yaw,
+            pitch,
+            place,
+            slot: self.model.inventory.selected,
+            inventory_revision: self.model.inventory.revision,
+        };
+        if let Some(t) = &self.transport {
+            if let Err(e) = t.send(ClientMessage::EditBlock(command)) {
+                self.model.container_error = e;
+            }
+        }
+    }
     pub fn load_demo(&mut self) {
         self.disconnect();
         if self.local_running() {

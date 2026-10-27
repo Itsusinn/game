@@ -9,7 +9,7 @@ signal lighting_changed(enabled: bool)
 
 const Palette = preload("res://src/interface_theme.gd")
 const Tile = preload("res://src/menu_tile.gd")
-const Backdrop = preload("res://src/frontier_backdrop.svg")
+const Backdrop = preload("res://materials/frontier_background.png")
 const GlassShader = preload("res://src/menu_glass.gdshader")
 const ACCENT := Palette.ACCENT
 var page := "home"
@@ -48,31 +48,32 @@ func _ready() -> void:
 	glass.material = glass_material
 	add_child(glass)
 	var header_bar := ColorRect.new()
-	header_bar.color = Color(0.04,0.05,0.065,0.90)
+	header_bar.color = Color(0.025,0.035,0.025,0.60)
 	header_bar.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	header_bar.offset_bottom = 82
 	header_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(header_bar)
 	var badge := ColorRect.new()
-	badge.color = Palette.PAPER
-	badge.position = Vector2(0,0)
-	badge.size = Vector2(176,82)
+	badge.color = Palette.ACCENT
+	badge.position = Vector2(36,27)
+	badge.size = Vector2(2,28)
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(badge)
 	var header := Label.new()
-	header.text = "D / 3D"
-	header.position = Vector2(48, 25)
+	header.text = "FRONTIER"
+	header.position = Vector2(52, 29)
 	header.add_theme_font_override("font", Palette.technical_font())
-	header.add_theme_font_size_override("font_size", 30)
-	header.add_theme_color_override("font_color", Palette.INK)
+	header.add_theme_font_size_override("font_size", 20)
+	header.add_theme_color_override("font_color", Palette.PAPER)
 	add_child(header)
 	section_label = Label.new()
 	section_label.text = "首页  /  HOME"
 	section_label.position = Vector2(205, 31)
-	section_label.add_theme_font_size_override("font_size", 19)
+	section_label.add_theme_font_size_override("font_size", 15)
+	section_label.modulate = Palette.MUTED
 	add_child(section_label)
 	var system_label := Label.new()
-	system_label.text = "边境行动终端    /    FRONTIER TERMINAL"
+	system_label.text = "探索 · 生存 · 同行"
 	system_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	system_label.offset_left = -440
 	system_label.offset_right = -40
@@ -84,15 +85,15 @@ func _ready() -> void:
 	hero.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	hero.anchor_left = 0.055
 	hero.anchor_right = 0.46
-	hero.anchor_top = 0.73
-	hero.anchor_bottom = 0.93
+	hero.anchor_top = 0.38
+	hero.anchor_bottom = 0.70
 	hero.add_theme_constant_override("separation", 5)
 	hero.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(hero)
-	_text(hero, "FIELD OPERATIONS   /   001", 15).modulate = ACCENT
-	_text(hero, "方块边境", 42).add_theme_font_override("font", Palette.display_font())
-	_text(hero, "DUNGEON  /  FRONTIER EXPEDITION", 15).add_theme_font_override("font", Palette.technical_font())
-	_text(hero, "准备就绪。选择行动，进入边境。", 14)
+	_text(hero, "荒野之间", 15).modulate = ACCENT
+	_text(hero, "方块边境", 46).add_theme_font_override("font", Palette.display_font())
+	_text(hero, "FRONTIER", 16).add_theme_font_override("font", Palette.technical_font())
+	_text(hero, "在林地与石墙之间，开始新的旅程。", 15).modulate = Palette.MUTED
 	pause_title = VBoxContainer.new()
 	pause_title.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	pause_title.anchor_left = 0.075
@@ -193,8 +194,8 @@ func _ready() -> void:
 	feedback.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	feedback.offset_left = 52
 	feedback.offset_right = -52
-	feedback.offset_top = -94
-	feedback.offset_bottom = -52
+	feedback.offset_top = -44
+	feedback.offset_bottom = -16
 	feedback.modulate = ACCENT
 	settings.load("user://settings.cfg")
 	fov_slider.value = clampf(float(settings.get_value("video", "fov", 72)), 55, 100)
@@ -208,8 +209,7 @@ func _ready() -> void:
 func _draw() -> void:
 	if not in_game:
 		draw_texture_rect(Backdrop,Rect2(Vector2.ZERO,size),false)
-		draw_rect(Rect2(Vector2.ZERO,size),Color(0.04,0.07,0.10,0.13 if page == "home" else 0.55))
-		draw_colored_polygon(PackedVector2Array([Vector2(0,size.y*0.70),Vector2(size.x*0.445,size.y*0.70),Vector2(size.x*0.49,size.y*0.94),Vector2(0,size.y*0.94)]),Color(0.035,0.05,0.065,0.87))
+		draw_rect(Rect2(Vector2.ZERO,size),Color(0.02,0.03,0.02,0.53 if page == "home" else 0.68))
 	# The header is drawn by a separate overlay so the glass stays below it.
 
 func _tile(caption: String, description: String, area: Rect2, callback: Callable, large := false, tint := Palette.PAPER) -> void:

@@ -25,7 +25,7 @@ just dev
 
 `just client` 会先编译并安装扩展 DLL；重新编译前关闭使用该 DLL 的游戏或编辑器。直接联机可执行 `powershell -File scripts/godot.ps1 run --connect`，直接进入单人游戏使用 `powershell -File scripts/godot.ps1 run --singleplayer`。
 
-设置包含视野、鼠标灵敏度、全局光照和全屏，保存在 Godot 用户目录的 `settings.cfg`。菜单保留 [Fluent Design 的光线、深度、动效和材质思路](https://gameinstitute.qq.com/article/10027)：圆角玻璃按钮、受光边缘、柔和投影、悬停高光与抬升、按压回落及页面缩放淡入。背景采用项目自有的工业场景与方块角色 SVG，整体使用黑白灰、蓝色多人入口及橙色强调。游戏内菜单模糊当前世界，设置、HUD 和行囊共用 `godot/src/interface_theme.gd` 主题。
+设置包含视野、鼠标灵敏度、全局光照和全屏，保存在 Godot 用户目录的 `settings.cfg`。视觉采用自然写实方向：石材、旧木板、树皮与草地 PBR 表面，柔和日光；UI 使用炭灰与灰绿色、细边框、小圆角和轻微反馈。菜单背景来自项目场景实机渲染，游戏内菜单模糊当前世界；设置、HUD、背包与快捷栏共用 `godot/src/interface_theme.gd` 主题。
 
 ```sh
 just demo
@@ -35,14 +35,16 @@ just demo
 
 ## 操作
 
-先单击世界区域捕获鼠标，按 Esc 打开游戏菜单并释放鼠标。菜单提供继续、设置、返回主界面、退出游戏；再次按 Esc 可继续。失去窗口焦点或打开背包时自动释放并清空按键。菜单打开时世界仍在运行，单人和多人均不暂停模拟。
+进入游戏后自动捕获鼠标，按 Esc 打开游戏菜单并释放鼠标。菜单提供继续、设置、返回主界面、退出游戏；再次按 Esc 可继续。背包、箱子、聊天等 UI 打开时释放鼠标，关闭后自动恢复捕获。失去窗口焦点时释放鼠标并清空按键，重新聚焦且没有 UI 打开时自动捕获。菜单打开时世界仍在运行，单人和多人均不暂停模拟。
 
 | 输入 | 动作 |
 |---|---|
 | 鼠标 | 第一人称转向、抬头与低头 |
 | WASD / 方向键 | 相对朝向连续移动 |
 | Space | 跳跃；需要落地后才能再次起跳 |
-| 左键 / F | 面向目标的近战攻击 |
+| 左键 | 破坏准星指向的方块，收入物品栏 |
+| 右键 | 在目标表面放置当前快捷栏方块，消耗 1 个 |
+| F | 面向目标的近战攻击 |
 | G | 拾取附近物品 |
 | E | 准星对准附近箱子时打开，Esc 关闭 |
 | Tab | 打开 / 关闭背包、日志和聊天 |
@@ -60,19 +62,49 @@ just demo
 
 - 64×32×64 方块世界，Y 轴向上，按 16×16×16 区块传输。世界有边界，不是无限生成世界。
 - 起伏地形、草地、树木、石屋遗迹、窗口、屋顶、可跳上的台阶和平台，以及有实体池底的浅水池。未实现游泳。
-- 透视相机、深度遮挡、隐藏方块面剔除、程序化像素材质、太阳阴影、SDFGI、SSAO 和距离雾。地形按区块生成网格，只在地图版本变化时重建；动态角色独立更新。SDFGI 替代原 WGSL GI，并非原算法的逐像素复现；动态实体接受 GI，但不承诺像静态地形一样参与 SDFGI 遮挡。
+- 透视相机、深度遮挡、隐藏方块面剔除、PBR 材质、太阳阴影、SDFGI、SSAO、ACES 色调映射和距离雾。地形按区块生成网格，只在地图版本变化时重建；动态角色独立更新。保留现有方块几何与角色造型，写实化主要体现在材质、光照和 UI。SDFGI 替代原 WGSL GI，并非原算法的逐像素复现；动态实体接受 GI，但不承诺像静态地形一样参与 SDFGI 遮挡。
 - 连续移动与重力在客户端、服务端共用 30 Hz 固定步长规则，处理地面、墙体、头顶、实体碰撞和未知区域阻挡。
 - 第一人称相机按渲染帧率在相邻两次已完成的本地运动状态间插值，消除 30 Hz 移动的阶梯感；位置显示延迟一个模拟步（约 33 毫秒），鼠标转向即时响应。权威位置纠正、复活和切换会话时重置插值。
 - 服务端权威近战、敌人追踪和攻击、拾取、背包、聊天、复活和多人同步。敌人使用直接追踪和视线判定，尚无跨高度的完整寻路。
-- 玩家物品栏为 27 格背包 + 9 格快捷栏，每格最多 64 个；快捷栏是物品栏的前 9 格，不复制物品。支持拖放、点击移动、拆分、合并、整组交换和 Shift 快速转移。底部显示快捷栏、数量及当前物品名称，1–9 或滚轮切换；选中槽位暂不增加物品使用、装备或攻击效果。背包满时拾取物留在地面；Esc 首先取消选中，再关闭界面。
+- 玩家物品栏为 27 格背包 + 9 格快捷栏，每格最多 64 个；快捷栏是物品栏的前 9 格，不复制物品。支持拖放、点击移动、拆分、合并、整组交换和 Shift 快速转移。底部显示快捷栏、数量及当前物品名称，1–9 或滚轮切换；选中的方块可右键放置，暂不增加装备或攻击效果。背包满时拾取物留在地面；Esc 首先取消选中，再关闭界面。
 - 箱子是有碰撞的容器方块，新地图在出生点附近 `(26, 7, 30)` 生成一个空箱子。准星对准箱子且距中心不超过 3.5 米时按 E 打开，与物品栏共用格子界面，支持跨区域拖放、单个或整组存取（界面每次最多 64）。为兼容既有存档，箱子仍容纳 24 类物品，每类最多 999 个；同类自动归并，空类移除。多人共享，由服务端检查距离、遮挡、数量、箱子版本和背包版本，失败不改变任何一端。离开范围、被遮挡、死亡、失焦或断线会关闭箱子；打开界面时世界仍运行。
-- 按确认范围，本轮不包含挖掘、放置方块、合成、动态流体、昼夜系统或完整账号存档。原先的饥饿、口渴等静态 HUD 已移除，避免展示尚未接通的玩法。
+- 单人及多人支持生存式方块编辑：每次点击破坏或放置一个方块，交互距离为视线 4.5 米，服务端成功操作间隔至少 0.2 秒。破坏直接收入对应方块，背包满则拒绝破坏；放置消耗当前快捷栏的 1 个方块。草方块、泥土、石块、原木、树叶、木板和空箱子可操作，水与世界底层不可破坏，水格不能被覆盖。非空箱子必须先取空；破坏空箱子会关闭其他玩家正在查看的该箱子。禁止越界、穿墙、覆盖已有方块或地面物品，以及在玩家/NPC 身体内放置。地形变化更新共享碰撞，并广播变化区块；客户端仅重建该区块及相邻区块网格。编辑后的地图、箱子与玩家物品共同持久化，旧地图无需额外迁移。离线 `--demo` 仍只用于漫游。
+- 本轮不包含合成、工具耐久、动态流体、昼夜系统或完整账号认证。原先的饥饿、口渴等静态 HUD 已移除，避免展示尚未接通的玩法。
+
+## 材质与视觉检查
+
+材质位于 `godot/materials/textures/`，使用 Poly Haven 的 CC0 1K JPG 颜色、OpenGL 法线和粗糙度贴图。来源、许可及 SHA-256 校验清单见 [素材说明](godot/materials/textures/LICENSE.md) 和 [sources.json](godot/materials/textures/sources.json)。纹理沿世界坐标连续铺设，箱子保留局部纹理和金属扣件。材质通过 Godot 导入，正式导出包含全部资源，不需要联网下载。
+
+### 资产名单
+
+| 资产 | 用途 | 仓库文件 | 来源与许可 |
+| --- | --- | --- | --- |
+| Weathered Brown Planks | 木板、箱子和物品图标 | `godot/materials/textures/weathered_brown_planks_*_1k.jpg` | [Poly Haven](https://polyhaven.com/a/weathered_brown_planks)，CC0 1.0 |
+| Stone Brick Wall 001 | 石墙与石材表面 | `godot/materials/textures/stone_brick_wall_001_*_1k.jpg` | [Poly Haven](https://polyhaven.com/a/stone_brick_wall_001)，CC0 1.0 |
+| Leafy Grass | 草地；经着色用于泥土与方块树冠 | `godot/materials/textures/leafy_grass_*_1k.jpg` | [Poly Haven](https://polyhaven.com/a/leafy_grass)，CC0 1.0 |
+| Bark Brown 02 | 树干表面 | `godot/materials/textures/bark_brown_02_*_1k.jpg` | [Poly Haven](https://polyhaven.com/a/bark_brown_02)，CC0 1.0 |
+| 主菜单场景背景 | 当前主菜单背景 | [frontier_background.png](godot/materials/frontier_background.png) | 项目场景自行渲染，使用上述 CC0 材质 |
+| 旧版工业场景插画 | 保留的旧版背景，当前菜单未使用 | [frontier_backdrop.svg](godot/src/frontier_backdrop.svg) | 项目自制 SVG |
+
+每套第三方材质包含 `diff`（颜色）、`nor_gl`（OpenGL 法线）和 `rough`（粗糙度）三张 1K JPG，共 12 张原始贴图。下载日期为 2026-10-27，许可见 [Poly Haven 资产许可](https://polyhaven.com/license) 与 [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/legalcode)。菜单背景可通过 `godot/tests/visuals.gd` 的无 HUD 截图重新生成。
+
+字体通过 Godot `SystemFont` 使用系统中的 Segoe UI、Microsoft YaHei UI 或 Noto Sans CJK SC，仓库未分发这些字体文件。
+
+### 视觉检查
+
+在完成 `just build` 和项目导入后，可用图形窗口生成世界、背包、暂停菜单、主菜单及设置页截图：
+
+```powershell
+& $env:GODOT_BIN --path godot --script res://tests/visuals.gd
+```
+
+输出默认位于 `target/visual-review/`，可用 `CDDA_VISUAL_PATH` 指定目录。该检查使用离线展示场景，临时启用 GI 和 72° 视野，不读写真实存档或覆盖用户设置；需要实际图形环境，不能用 headless 代替画面验证。
 
 ## 网络与存档
 
 - 默认监听 `127.0.0.1:9876`；局域网可设置 `CDDA_BIND=0.0.0.0:9876`。
 - 服务端每次启动生成 TLS 证书，默认写入 `save/server.cert.der`，可用 `CDDA_CERT_PATH` 改路径。客户端必须使用服务端本次生成的证书，不跳过验证；远程玩家通过 `--cert FILE.der` 指定证书。
-- 协议版本为 **6**，登录包含客户端稳定 UUID，欢迎消息携带恢复的镜头朝向；保留固定槽位和容器双方版本校验。版本 5 及更旧客户端不能加入，客户端与服务端须同时更新。
+- 协议版本为 **7**，新增服务端权威方块编辑命令；登录包含客户端稳定 UUID，欢迎消息携带恢复的镜头朝向，保留固定槽位和容器双方版本校验。版本 6 及更旧客户端不能加入，客户端与服务端须同时更新。世界存档仍为版本 4。
 - `World3d.seq` 是该玩家最后**执行**的输入序号。客户端只有在有界发送队列接受输入后才预测；收到快照先应用权威位置与速度，再重放未确认输入。服务端每 tick 最多消费每人一条输入，拒绝无效数值、乱序和超量积压。
 - 慢客户端的队列不能阻塞广播；网络读取任务持续拥有接收流，不会被 UI 的发送取消。客户端每帧处理网络消息数量有上限。
 - 默认存档为 **`save/world3d.bin`**，保留 `DNG3D001` 标记，格式版本 **4**。这个小型 MessagePack 清单仅保存尺寸、种子和归档引用；实际区块数据位于 `world3d.chunks/<批次 UUID>.rkyv`，玩家数据位于 `world3d.players/<同一批次 UUID>.rkyv`，均由 rkyv + memmap2 读写。先写完并同步两个不可变归档，再原子替换世界清单；保存中断仍加载上一个完整批次，不混用地图、箱子、地面物品和玩家背包。
@@ -96,7 +128,7 @@ just demo
 
 每个分段用稳定的 `game:*` 方块名称调色板和 u64 压缩索引保存，索引顺序为 `y*256+z*16+x`。单一方块无需索引数组；其余至少 4 位，索引不跨 u64 边界。箱子作为所属区块的方块实体保存位置、修订号和物品，地面物品同样归属区块列。空分段也显式记录，缺失数据视为损坏。当前没有增加生物群系、光照缓存或无限世界。
 
-区块文件使用 `DNGCHK01`、16 字节头、版本 1、little-endian/32 位归档指针布局，与玩家共用映射 IO。Windows 保持文件句柄直到映射释放，禁止映射期间写入或删除；其他平台使用匿名映射副本。读取先进行 rkyv bytecheck，再检查区块完整性、调色板、压缩长度、实体归属和箱子方块对应关系。运行时仍使用稠密网格，网络消息继续使用协议 6 的 MessagePack。
+区块文件使用 `DNGCHK01`、16 字节头、版本 1、little-endian/32 位归档指针布局，与玩家共用映射 IO。Windows 保持文件句柄直到映射释放，禁止映射期间写入或删除；其他平台使用匿名映射副本。读取先进行 rkyv bytecheck，再检查区块完整性、调色板、压缩长度、实体归属和箱子方块对应关系。运行时仍使用稠密网格，网络消息使用协议 7 的 MessagePack。
 
 ### 玩家数据编解码
 
@@ -142,6 +174,7 @@ just web-check
 just godot-smoke
 just godot-multiplayer
 just godot-containers
+just godot-editing
 just export-debug
 just export-release
 powershell -File scripts/godot.ps1 demo --capture C:/absolute/path/demo.png
@@ -149,7 +182,9 @@ powershell -File scripts/godot.ps1 demo --capture C:/absolute/path/demo.png
 
 `just check` 包含格式和严格 Clippy；大型 Cargo 操作使用 `--jobs 2` 串行运行。WASM 检查仅覆盖协议、核心与共享模拟，需要安装 `wasm32-unknown-unknown` target，不包含原生扩展或桌面 QUIC。
 
-`just godot-containers` 使用 `target/` 下独立世界验证 36 格布局、移动和快速转移、数字键/滚轮、聊天输入隔离、Esc 取消选择，以及箱子存取和保存重开。Rust 测试覆盖堆叠、拆分、合并、交换、容量边界和数量守恒；`client/tests/multiplayer.rs` 另有真实 QUIC 共享箱子、物品栏移动与版本冲突测试。箱子仍不提供挖掘、放置、锁定或所有权功能。
+`just godot-containers` 使用 `target/` 下独立世界验证 36 格布局、移动和快速转移、数字键/滚轮、聊天输入隔离、Esc 取消选择，以及箱子存取和保存重开。Rust 测试覆盖堆叠、拆分、合并、交换、容量边界和数量守恒；`client/tests/multiplayer.rs` 另有真实 QUIC 共享箱子、物品栏移动、版本冲突及双客户端方块同步测试。箱子不提供锁定或所有权功能。
+
+`just godot-editing` 使用隔离世界及身份验证左右键、方块收取/消耗、UI 输入隔离、未变化区块网格复用和保存重开。使用 `& $env:GODOT_BIN --path godot --script res://tests/editing.gd` 可在实际图形窗口运行相同检查并保存截图；测试注入输入事件，不代替完整手动键鼠验收。
 
 Windows 的 just 配方已配置 PowerShell。GPU 截图需要实际图形会话。`godot-smoke` 验证真实场景与扩展，`godot-multiplayer` 启动隔离服务端并验证两个 Godot 桥接实例的真实 QUIC 会话，不能替代两窗口的键鼠操作验收。
 
