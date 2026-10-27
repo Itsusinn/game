@@ -106,6 +106,8 @@ pub struct PlayerInput {
     pub yaw: f32,
     pub pitch: f32,
     pub jump: bool,
+    pub descend: bool,
+    pub sprint: bool,
     pub attack: bool,
     pub pickup: bool,
 }
@@ -143,6 +145,7 @@ pub struct GroundItem3d {
 pub struct Snapshot3d {
     pub seq: u32,
     pub body: Body,
+    pub flying: bool,
     pub actors: Vec<Actor3d>,
     pub items: Vec<GroundItem3d>,
     pub hp: i32,
@@ -165,6 +168,8 @@ mod tests {
                 yaw: 1.2,
                 pitch: 0.3,
                 jump: true,
+                descend: true,
+                sprint: true,
                 attack: true,
                 pickup: false,
             },
@@ -176,6 +181,7 @@ mod tests {
         );
         let snapshot = crate::ServerMessage::World3d(Snapshot3d {
             seq: 11,
+            flying: true,
             body: Body {
                 position: [2.25, 9.125, 14.5],
                 velocity: [0.5, -4.0, 1.0],

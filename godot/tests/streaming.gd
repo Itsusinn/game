@@ -31,7 +31,7 @@ func run() -> void:
 	scene.hud.menu.loading_settings = true
 	scene.set_process(false)
 	scene._singleplayer()
-	if not await settle(func(): return scene.state.ready and scene.state.loaded_sections == 98):
+	if not await settle(func(): return scene.state.ready and scene.state.loaded_sections == 98 and scene.terrain_pending.is_empty()):
 		check(false,"streaming fixture ready")
 		quit(1)
 		return

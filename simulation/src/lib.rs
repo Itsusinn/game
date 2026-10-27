@@ -43,19 +43,41 @@ pub fn step_with_actors(
     solid: impl Fn([i32; 3]) -> bool,
     actors: &[[f32; 3]],
 ) {
+    step_player_with_actors(body, input, false, solid, actors);
+}
+
+/// Flying is an authoritative movement mode, never a client input permission.
+pub fn step_player_with_actors(
+    body: &mut Body,
+    input: PlayerInput,
+    flying: bool,
+    solid: impl Fn([i32; 3]) -> bool,
+    actors: &[[f32; 3]],
+) {
     if !input.valid() {
         return;
     }
-    let length = (input.forward * input.forward + input.strafe * input.strafe)
-        .sqrt()
-        .max(1.0);
+    let vertical = if flying {
+        f32::from(input.jump) - f32::from(input.descend)
+    } else {
+        0.0
+    };
+    let length =
+        (input.forward * input.forward + input.strafe * input.strafe + vertical * vertical)
+            .sqrt()
+            .max(1.0);
+    let speed = SPEED * if flying && input.sprint { 3.0 } else { 1.0 };
     let (sin, cos) = input.yaw.sin_cos();
-    body.velocity[0] = (sin * input.forward + cos * input.strafe) / length * SPEED;
-    body.velocity[2] = (-cos * input.forward + sin * input.strafe) / length * SPEED;
-    if input.jump && body.grounded {
-        body.velocity[1] = 8.2;
+    body.velocity[0] = (sin * input.forward + cos * input.strafe) / length * speed;
+    body.velocity[2] = (-cos * input.forward + sin * input.strafe) / length * speed;
+    if flying {
+        body.velocity[1] = vertical / length * speed;
+    } else {
+        if input.jump && body.grounded {
+            body.velocity[1] = 8.2;
+        }
+        body.velocity[1] = (body.velocity[1] - 23.0 * DT).max(-20.0);
     }
-    body.velocity[1] = (body.velocity[1] - 23.0 * DT).max(-20.0);
     physics::move_character(body, &solid, actors);
 }
 
@@ -130,6 +152,129 @@ pub fn targeted_container(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn flight_ascends_descends_hovers_accelerates_and_resumes_gravity() {
+        let start = Body {
+            position: [10.0, 10.0, 10.0],
+            ..Default::default()
+        };
+        let mut b = start;
+        step_player_with_actors(
+            &mut b,
+            PlayerInput {
+                jump: true,
+                ..Default::default()
+            },
+            true,
+            |_| false,
+            &[],
+        );
+        assert!((b.position[1] - start.position[1] - SPEED * DT).abs() < 0.001);
+        let hovering = b.position;
+        for _ in 0..30 {
+            step_player_with_actors(&mut b, PlayerInput::default(), true, |_| false, &[]);
+        }
+        assert_eq!(b.position, hovering);
+        step_player_with_actors(
+            &mut b,
+            PlayerInput {
+                descend: true,
+                sprint: true,
+                ..Default::default()
+            },
+            true,
+            |_| false,
+            &[],
+        );
+        assert!((hovering[1] - b.position[1] - 3.0 * SPEED * DT).abs() < 0.001);
+        b = start;
+        step_player_with_actors(
+            &mut b,
+            PlayerInput {
+                jump: true,
+                strafe: 1.0,
+                forward: 1.0,
+                sprint: true,
+                ..Default::default()
+            },
+            true,
+            |_| false,
+            &[],
+        );
+        assert!((distance(start.position, b.position) - 3.0 * SPEED * DT).abs() < 0.001);
+        step_player_with_actors(&mut b, PlayerInput::default(), false, |_| false, &[]);
+        // Switching mode on the server zeroes velocity; simulate the same transition.
+        b.velocity = [0.0; 3];
+        let y = b.position[1];
+        step_player_with_actors(
+            &mut b,
+            PlayerInput {
+                descend: true,
+                sprint: true,
+                ..Default::default()
+            },
+            false,
+            |_| false,
+            &[],
+        );
+        assert!(b.position[1] < y);
+        assert_eq!(b.velocity[0], 0.0);
+    }
+
+    #[test]
+    fn accelerated_flight_respects_walls_ceiling_actors_and_unknown_terrain() {
+        let mut b = Body {
+            position: [0.5, 1.0, 0.5],
+            ..Default::default()
+        };
+        for _ in 0..30 {
+            step_player_with_actors(
+                &mut b,
+                PlayerInput {
+                    jump: true,
+                    strafe: 1.0,
+                    sprint: true,
+                    ..Default::default()
+                },
+                true,
+                |p| p[0] >= 2 || p[1] >= 4,
+                &[],
+            );
+        }
+        assert!(b.position[0] < 2.0 - RADIUS);
+        assert!(b.position[1] < 4.0 - HEIGHT);
+        b.position = [0.5, 1.0, 0.5];
+        for _ in 0..30 {
+            step_player_with_actors(
+                &mut b,
+                PlayerInput {
+                    strafe: 1.0,
+                    sprint: true,
+                    ..Default::default()
+                },
+                true,
+                |_| false,
+                &[[2.0, 1.0, 0.5]],
+            );
+        }
+        assert!(b.position[0] < 2.0 - 2.0 * RADIUS);
+        let map = grid::Grid::empty();
+        b.position = [63.0, 10.0, 10.0];
+        for _ in 0..30 {
+            step_player_with_actors(
+                &mut b,
+                PlayerInput {
+                    strafe: 1.0,
+                    sprint: true,
+                    ..Default::default()
+                },
+                true,
+                |p| map.solid(p),
+                &[],
+            );
+        }
+        assert!(b.position[0] < 64.0 - RADIUS);
+    }
     #[test]
     fn chest_targeting_stops_at_walls_and_respects_reach() {
         let mut map = grid::Grid::empty();

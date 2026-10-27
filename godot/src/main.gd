@@ -9,6 +9,10 @@ var environment: Environment
 var sun: DirectionalLight3D
 var terrain_root: Node3D
 var terrain_nodes: Dictionary = {}
+var terrain_pending: Dictionary = {}
+var terrain_updates_last_frame := 0
+const TERRAIN_BUDGET_USEC := 2000
+const TERRAIN_UPDATES_PER_FRAME := 2
 var entities: Dictionary = {}
 var item_nodes: Dictionary = {}
 var actor_meshes: Array[ArrayMesh] = []
@@ -95,7 +99,8 @@ func _parse_options(args: PackedStringArray) -> Dictionary:
 
 func _setup_input() -> void:
 	var mappings := {"forward": [KEY_W, KEY_UP], "back": [KEY_S, KEY_DOWN],
-		"left": [KEY_A, KEY_LEFT], "right": [KEY_D, KEY_RIGHT], "jump": [KEY_SPACE], "interact": [KEY_E]}
+		"left": [KEY_A, KEY_LEFT], "right": [KEY_D, KEY_RIGHT], "jump": [KEY_SPACE],
+		"descend": [KEY_SHIFT], "sprint": [KEY_CTRL], "interact": [KEY_E]}
 	for action in mappings:
 		if not InputMap.has_action(action): InputMap.add_action(action)
 		for key in mappings[action]:
@@ -244,7 +249,7 @@ func _release_mouse() -> void:
 	attack = false
 	pickup = false
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	for action in ["forward","back","left","right","jump"]: Input.action_release(action)
+	for action in ["forward","back","left","right","jump","descend","sprint"]: Input.action_release(action)
 	if is_instance_valid(bridge): bridge.clear_actions()
 
 func _focus_lost() -> void:
@@ -327,6 +332,14 @@ func _input(event: InputEvent) -> void:
 			if focus_owner: focus_owner.release_focus()
 			_sync_mouse_capture()
 			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_SLASH and captured and state.get("ready", false) and not state.get("demo", false):
+			hud.inventory_open = true
+			_release_mouse()
+			hud.update_state(state, false)
+			hud.chat.text = "/"
+			hud.chat.grab_focus()
+			hud.chat.caret_column = 1
+			get_viewport().set_input_as_handled()
 		elif captured and focused and not hud.menu.visible and not hud.inventory_open and not hud.container_open:
 			for i in range(9):
 				if event.is_action_pressed("hotbar_%d" % i):
@@ -356,6 +369,8 @@ func _process(delta: float) -> void:
 		controls.forward = Input.get_action_strength("forward") - Input.get_action_strength("back")
 		controls.strafe = Input.get_action_strength("right") - Input.get_action_strength("left")
 		controls.jump = Input.is_action_pressed("jump")
+		controls.descend = Input.is_action_pressed("descend")
+		controls.sprint = Input.is_action_pressed("sprint")
 		controls.attack = attack
 		controls.pickup = pickup
 	attack = false
@@ -406,9 +421,9 @@ func _process(delta: float) -> void:
 		pitch = state.spawn_rotation.y
 		hotbar_cursor = state.selected_slot
 	if state.ready and revision != next_revision:
-		_rebuild_terrain()
 		revision = next_revision
 		ready_frames = 0
+	if state.ready: _rebuild_terrain()
 	if state.ready:
 		camera.position = state.position + Vector3(0,1.58,0)
 		camera.rotation = Vector3(pitch,-yaw,0)
@@ -423,13 +438,14 @@ func _process(delta: float) -> void:
 			capture_pending = true
 			exit_code = 1
 			_leave_game(true)
-		elif (state.ready or (not capture_requires_world and hud.menu.visible and hud.menu.page == "home")) and ready_frames >= capture_frames:
+		elif (state.ready or (not capture_requires_world and hud.menu.visible and hud.menu.page == "home")) and ready_frames >= capture_frames and terrain_pending.is_empty():
 			capture_pending = true
 			_capture()
 
 func _clear_world() -> void:
 	hotbar_cursor = 0
 	terrain_nodes.clear()
+	terrain_pending.clear()
 	for child in terrain_root.get_children():
 		terrain_root.remove_child(child)
 		child.queue_free()
@@ -440,14 +456,30 @@ func _clear_world() -> void:
 	revision = Vector2i(state.generation,-1)
 
 func _rebuild_terrain() -> void:
+	var started_at := Time.get_ticks_usec()
+	terrain_updates_last_frame = 0
 	for origin in bridge.take_dirty_chunks():
+		if not bridge.has_chunk(origin):
+			terrain_pending.erase(origin)
+			_remove_terrain(origin)
+		else:
+			terrain_pending[origin] = true
+	if terrain_pending.is_empty(): return
+	# Coalesce repeated changes and use the latest voxel state when work executes.
+	# Removed chunks never wait behind uploads, and old sessions clear the queue.
+	var origins := terrain_pending.keys()
+	var feet: Vector3 = state.body_position
+	origins.sort_custom(func(a: Vector3i, b: Vector3i):
+		return (Vector3(a)+Vector3(8,8,8)).distance_squared_to(feet) < (Vector3(b)+Vector3(8,8,8)).distance_squared_to(feet))
+	for origin in origins:
+		if terrain_updates_last_frame >= TERRAIN_UPDATES_PER_FRAME: break
+		if terrain_updates_last_frame > 0 and Time.get_ticks_usec()-started_at >= TERRAIN_BUDGET_USEC: break
+		terrain_pending.erase(origin)
+		terrain_updates_last_frame += 1
 		var mesh := _mesh(bridge.chunk_geometry(origin))
 		var node: MeshInstance3D = terrain_nodes.get(origin)
 		if mesh.get_surface_count() == 0:
-			if is_instance_valid(node):
-				terrain_root.remove_child(node)
-				node.queue_free()
-			terrain_nodes.erase(origin)
+			_remove_terrain(origin)
 			continue
 		if not is_instance_valid(node):
 			node = MeshInstance3D.new()
@@ -456,6 +488,13 @@ func _rebuild_terrain() -> void:
 			terrain_root.add_child(node)
 			terrain_nodes[origin] = node
 		node.mesh = mesh
+
+func _remove_terrain(origin: Vector3i) -> void:
+	var node: MeshInstance3D = terrain_nodes.get(origin)
+	if is_instance_valid(node):
+		terrain_root.remove_child(node)
+		node.queue_free()
+	terrain_nodes.erase(origin)
 
 func _update_entities() -> void:
 	var live := {}

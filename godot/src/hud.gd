@@ -87,7 +87,7 @@ func _ready() -> void:
 	journal.scroll_following = true
 	column.add_child(journal)
 	chat = field(column, "通讯  /  CHAT", "")
-	chat.placeholder_text = "输入消息，按 Enter 发送"
+	chat.placeholder_text = "输入消息或 /help，按 Enter 发送"
 	chat.text_submitted.connect(func(text: String):
 		if not text.strip_edges().is_empty():
 			chat_requested.emit(text)
@@ -171,7 +171,9 @@ func update_state(state: Dictionary, captured: bool) -> void:
 	var held: Dictionary = state.inventory_slots[state.selected_slot]
 	held_name.text = "空手" if held.is_empty() else held.name
 	top.visible = state.ready and not menu.visible
+	top.offset_left = -440 if state.get("flying", false) else -338
 	health.text = "HP   %03d / 100" % state.hp if state.ready else ""
+	if state.get("flying", false): health.text += "  ·  飞行"
 	health_bar.value = state.hp
 	var p: Vector3 = state.body_position
 	coordinates.text = "X %.1f   Y %.1f   Z %.1f" % [p.x, p.y, p.z]

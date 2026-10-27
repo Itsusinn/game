@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing','streaming')]
+    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing','streaming','commands','streaming-perf')]
     [string]$Action = 'run',
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$GameArgs
@@ -40,6 +40,14 @@ function Build-Extension([bool]$Release) {
 
 Build-Extension $false
 if ($Action -eq 'build') { exit 0 }
+if ($Action -eq 'streaming-perf') {
+    & $godotExe --path godot --script res://tests/streaming_performance.gd
+    exit $LASTEXITCODE
+}
+if ($Action -eq 'commands') {
+    & $godotExe --headless --path godot --script res://tests/commands.gd
+    exit $LASTEXITCODE
+}
 if ($Action -eq 'streaming') {
     $fixtureOutput = & cargo test -p client --test multiplayer --jobs 2 exploration_streams_generated_columns_unloads_and_reconnects_at_negative_position -- --nocapture
     $fixtureOutput | Write-Output

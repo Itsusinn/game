@@ -1,3 +1,4 @@
+mod commands;
 mod containers;
 mod editing;
 mod inventory;
@@ -20,6 +21,9 @@ struct Player {
     uuid: Option<[u8; 16]>,
     name: String,
     body: Body,
+    flying: bool,
+    command_after: u64,
+    command_log: Vec<LogEntry>,
     hp: i32,
     yaw: f32,
     pitch: f32,
@@ -130,6 +134,9 @@ impl VoxelWorld {
                     ..Default::default()
                 },
                 hp: 100,
+                flying: false,
+                command_after: 0,
+                command_log: vec![],
                 yaw: 0.0,
                 pitch: -0.1,
                 last_seq: 0,
@@ -200,7 +207,12 @@ impl VoxelWorld {
     pub fn chat(&mut self, id: u32, text: String) -> Result<()> {
         anyhow::ensure!(text.len() <= 512, "chat too long");
         if self.players.contains_key(&id) {
-            self.note(format!("Player {id}: {}", text.trim()));
+            let text = text.trim();
+            if text.starts_with('/') {
+                self.player_command(id, text);
+            } else if !text.is_empty() {
+                self.note(format!("Player {id}: {text}"));
+            }
         }
         Ok(())
     }
@@ -251,7 +263,13 @@ impl VoxelWorld {
             };
             p.yaw = input.yaw;
             p.pitch = input.pitch;
-            step_with_actors(&mut p.body, input, |b| self.terrain.solid(b), &obstacles);
+            game_simulation::step_player_with_actors(
+                &mut p.body,
+                input,
+                p.flying,
+                |b| self.terrain.solid(b),
+                &obstacles,
+            );
             if let Some(a) = occupants.iter_mut().find(|a| a.0 == id) {
                 a.1 = p.body.position;
             }
@@ -325,6 +343,7 @@ impl VoxelWorld {
                     ..Default::default()
                 };
                 p.hp = 100;
+                p.flying = false;
             }
         }
         for p in self.players.values_mut() {
@@ -355,11 +374,12 @@ impl VoxelWorld {
                 .try_send(ServerMessage::World3d(Snapshot3d {
                     seq: p.last_seq,
                     body: p.body,
+                    flying: p.flying,
                     actors: actors.clone(),
                     items: self.items.clone(),
                     hp: p.hp,
                     inventory: p.inventory.clone(),
-                    log: self.log.clone(),
+                    log: self.player_log(p),
                     container: p
                         .open_container
                         .and_then(|pos| self.containers.get(&pos).cloned()),

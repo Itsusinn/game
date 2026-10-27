@@ -195,6 +195,7 @@ mod tests {
         let displayed = movement.position();
         let predicted = session.model.body;
         session.model.apply(ServerMessage::World3d(Snapshot3d {
+            flying: false,
             container: None,
             container_error: String::new(),
             seq: 1,

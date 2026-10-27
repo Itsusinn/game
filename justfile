@@ -84,6 +84,14 @@ godot-editing:
 godot-streaming:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 streaming
 
+# 实际图形窗口测量新区块加载耗时并检查地形队列清理
+godot-streaming-perf:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 streaming-perf
+
+# 使用隔离世界验证聊天指令、传送、飞行与输入隔离
+godot-commands:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 commands
+
 # 导出 Windows 调试客户端
 export-debug:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 export-debug

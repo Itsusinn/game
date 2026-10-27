@@ -4,18 +4,42 @@ use protocol::*;
 
 pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
     let mut mesh = Mesh::default();
-    for y in origin[1]..origin[1] + CHUNK_EDGE {
-        for z in origin[2]..origin[2] + CHUNK_EDGE {
-            for x in origin[0]..origin[0] + CHUNK_EDGE {
-                let block = model.terrain.get([x, y, z]);
+    let Some(blocks) = model.terrain.blocks.get(&origin) else {
+        return mesh;
+    };
+    // Cache the six section references once. The hot loop uses contiguous byte
+    // indices instead of BTreeMap lookups and signed coordinate division per face.
+    let neighbors = NORMALS.map(|n| {
+        let adjacent = std::array::from_fn(|i| origin[i] + n[i] as i32 * CHUNK_EDGE);
+        model.terrain.blocks.get(&adjacent)
+    });
+    for ly in 0..16usize {
+        for lz in 0..16usize {
+            for lx in 0..16usize {
+                let index = lx + 16 * (lz + 16 * ly);
+                let block = blocks[index];
                 if block == AIR || block == 255 {
                     continue;
                 }
-                for (face, n) in NORMALS.iter().enumerate() {
-                    let neighbor =
-                        model
-                            .terrain
-                            .get([x + n[0] as i32, y + n[1] as i32, z + n[2] as i32]);
+                let [x, y, z] = [
+                    origin[0] + lx as i32,
+                    origin[1] + ly as i32,
+                    origin[2] + lz as i32,
+                ];
+                let cells = [
+                    (lx == 0, index.wrapping_sub(1), index + 15),
+                    (lx == 15, index + 1, index.wrapping_sub(15)),
+                    (ly == 0, index.wrapping_sub(256), index + 15 * 256),
+                    (ly == 15, index + 256, index.wrapping_sub(15 * 256)),
+                    (lz == 0, index.wrapping_sub(16), index + 15 * 16),
+                    (lz == 15, index + 16, index.wrapping_sub(15 * 16)),
+                ];
+                for (face, (edge, local, adjacent)) in cells.into_iter().enumerate() {
+                    let neighbor = if edge {
+                        neighbors[face].map_or(255, |b| b[adjacent])
+                    } else {
+                        blocks[local]
+                    };
                     if neighbor != AIR && !(neighbor == WATER && block != WATER) && neighbor != 255
                     {
                         continue;
@@ -117,6 +141,71 @@ pub fn actors(model: &Client3d) -> Mesh {
 mod tests {
     use super::*;
     use game_simulation::grid::Grid;
+
+    #[test]
+    fn cached_neighbors_match_grid_queries_across_signed_edges_water_and_unloads() {
+        let mut m = Client3d::default();
+        for x in [-16, 0, 16] {
+            for z in [-16, 0, 16] {
+                for y in [0, 16] {
+                    let blocks: Vec<_> = (0..4096).map(|i| ((i * 17 + i / 19) % 9) as u8).collect();
+                    assert!(m.terrain.apply_chunk([x, y, z], &blocks));
+                }
+            }
+        }
+        for unloaded in [false, true] {
+            if unloaded {
+                m.terrain.unload_column([-1, 0]);
+            }
+            for origin in [[0, 0, 0], [-16, 16, -16], [16, 0, 16], [0, 16, 0]] {
+                let mesh = terrain_chunk(&m, origin);
+                let mut reference = Mesh::default();
+                for y in origin[1]..origin[1] + 16 {
+                    for z in origin[2]..origin[2] + 16 {
+                        for x in origin[0]..origin[0] + 16 {
+                            let block = m.terrain.get([x, y, z]);
+                            if block == AIR || block == 255 {
+                                continue;
+                            }
+                            for (face, normal) in NORMALS.iter().enumerate() {
+                                let neighbor = m.terrain.get([
+                                    x + normal[0] as i32,
+                                    y + normal[1] as i32,
+                                    z + normal[2] as i32,
+                                ]);
+                                if (neighbor != AIR
+                                    && !(neighbor == WATER && block != WATER)
+                                    && neighbor != 255)
+                                    || (y == 0 && face == 2)
+                                {
+                                    continue;
+                                }
+                                reference.block_face(
+                                    [x as f32, y as f32, z as f32],
+                                    [1.0; 3],
+                                    face,
+                                    [0.0; 3],
+                                    0,
+                                );
+                            }
+                        }
+                    }
+                }
+                let topology = |mesh: Mesh| {
+                    mesh.vertices
+                        .into_iter()
+                        .map(|v| (v.position, v.normal, v.uv))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    topology(mesh),
+                    topology(reference),
+                    "origin={origin:?}, unloaded={unloaded}"
+                );
+            }
+        }
+        assert!(terrain_chunk(&m, [-16, 0, 0]).vertices.is_empty());
+    }
 
     #[test]
     fn adjacent_chunks_cull_their_shared_faces() {

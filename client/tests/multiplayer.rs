@@ -10,6 +10,143 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::{oneshot, Mutex};
 
 #[tokio::test]
+async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = endpoint.local_addr().unwrap();
+        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
+        let (stop, stopped) = oneshot::channel();
+        let server = tokio::spawn(serve_endpoint(endpoint, manager, async {
+            let _ = stopped.await;
+        }));
+        let (_e1, c1) = connect_endpoint(address, cert.clone()).await.unwrap();
+        let (mut send, mut recv) = c1.open_bi().await.unwrap();
+        let id = login(&mut send, &mut recv, "Commander").await;
+        snapshot(&mut recv, 0).await;
+        let (_e2, c2) = connect_endpoint(address, cert).await.unwrap();
+        let (mut send2, mut recv2) = c2.open_bi().await.unwrap();
+        login(&mut send2, &mut recv2, "Observer").await;
+        // Keep the observer receive stream owned and drained throughout the test.
+        let observer = tokio::spawn(async move {
+            let mut saw_destination = false;
+            let mut saw_chat = false;
+            while let Ok(message) = read_message(&mut recv2).await {
+                if let ServerMessage::World3d(s) = message {
+                    assert!(!s.log.iter().any(|e| e.text.contains("未知指令")
+                        || e.text.contains("飞行已开启")
+                        || e.text.contains("已传送至")));
+                    saw_destination |= s
+                        .actors
+                        .iter()
+                        .any(|a| a.id == id && a.position[0] < -200.0);
+                    saw_chat |= s.log.iter().any(|e| e.text.contains("public message"));
+                    if saw_destination && saw_chat {
+                        return;
+                    }
+                }
+            }
+            panic!("observer missed teleport or public chat");
+        });
+        write_message(
+            &mut send,
+            &ClientMessage::Chat3d {
+                text: "/fly on".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let start = loop {
+            let s = snapshot(&mut recv, 0).await;
+            if s.flying {
+                break s.body.position;
+            }
+        };
+        write_message(
+            &mut send,
+            &ClientMessage::Input3d {
+                seq: 1,
+                input: PlayerInput {
+                    jump: true,
+                    sprint: true,
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let airborne = snapshot(&mut recv, 1).await;
+        assert!(airborne.body.position[1] > start[1] + 0.3);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        write_message(
+            &mut send,
+            &ClientMessage::Chat3d {
+                text: "/tp -200.5 20 300.5".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut model = game_client_core::voxel::Client3d::default();
+        model.apply(ServerMessage::Welcome3d {
+            player_id: id,
+            seed: 12345,
+            rotation: [0.0; 2],
+        });
+        loop {
+            model.apply(read_message(&mut recv).await.unwrap());
+            assert!(model.terrain.blocks.len() <= 98);
+            if model.body.position[0] < -200.0 && model.terrain.nearby_known(model.body.position) {
+                break;
+            }
+        }
+        assert_eq!(model.body.position, [-200.5, 20.0, 300.5]);
+        assert!(model.flying);
+        write_message(
+            &mut send,
+            &ClientMessage::Chat3d {
+                text: "/unknown".into(),
+            },
+        )
+        .await
+        .unwrap();
+        loop {
+            let s = snapshot(&mut recv, 1).await;
+            if s.log.iter().any(|e| e.text.contains("未知指令")) {
+                break;
+            }
+        }
+        write_message(
+            &mut send,
+            &ClientMessage::Chat3d {
+                text: "public message".into(),
+            },
+        )
+        .await
+        .unwrap();
+        observer.await.unwrap();
+        // Ordinary malformed commands must not disconnect the sending player.
+        write_message(
+            &mut send,
+            &ClientMessage::Input3d {
+                seq: 2,
+                input: PlayerInput {
+                    descend: true,
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert!(snapshot(&mut recv, 2).await.body.position[1] < 20.0);
+        c1.close(0u32.into(), b"done");
+        c2.close(0u32.into(), b"done");
+        let _ = stop.send(());
+        server.await.unwrap().unwrap();
+    })
+    .await
+    .expect("player commands timed out");
+}
+
+#[tokio::test]
 async fn exploration_streams_generated_columns_unloads_and_reconnects_at_negative_position() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let mut world = VoxelWorld::new(12345);

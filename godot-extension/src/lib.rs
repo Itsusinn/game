@@ -226,6 +226,8 @@ impl GameBridge {
             yaw: number("yaw"),
             pitch: number("pitch"),
             jump: flag("jump"),
+            descend: flag("descend"),
+            sprint: flag("sprint"),
             attack: false,
             pickup: false,
         };
@@ -301,6 +303,7 @@ impl GameBridge {
             "loaded_sections" => m.terrain.blocks.len() as i64,
             "position" => vector(self.movement.position()), "body_position" => vector(m.body.position),
             "grounded" => m.body.grounded, "hp" => m.hp, "player_id" => i64::from(m.player_id),
+            "flying" => m.flying,
             "pending" => m.pending.len() as i64,
             "spawn_rotation" => Vector2::new(m.spawn_rotation[0], m.spawn_rotation[1]),
             "inventory_slots" => &inventory_slots, "inventory_revision" => m.inventory.revision as i64,
@@ -308,6 +311,15 @@ impl GameBridge {
             "container" => &container, "container_error" => m.container_error.as_str(),
             "actors" => &actors, "items" => &items, "inventory" => &inventory, "journal" => &journal
         }
+    }
+
+    #[func]
+    fn has_chunk(&self, origin: Vector3i) -> bool {
+        self.session
+            .model
+            .terrain
+            .blocks
+            .contains_key(&[origin.x, origin.y, origin.z])
     }
 
     #[func]
@@ -370,15 +382,29 @@ fn geometry(mesh: Mesh) -> VarDictionary {
     let mut colors = PackedColorArray::new();
     let mut uv = PackedVector2Array::new();
     let mut patterns = PackedVector2Array::new();
+    let len = mesh.vertices.len();
+    vertices.resize(len);
+    normals.resize(len);
+    colors.resize(len);
+    uv.resize(len);
+    patterns.resize(len);
+    // One allocation and mutable-slice acquisition per attribute, not five
+    // engine calls per vertex. All Godot storage remains on the main thread.
+    let vertex_data = vertices.as_mut_slice();
+    let normal_data = normals.as_mut_slice();
+    let color_data = colors.as_mut_slice();
+    let uv_data = uv.as_mut_slice();
+    let pattern_data = patterns.as_mut_slice();
     // Convert the CPU mesh's counter-clockwise faces to Godot's clockwise winding.
-    for tri in mesh.vertices.as_chunks::<3>().0 {
-        for i in [0, 2, 1] {
+    for (triangle, tri) in mesh.vertices.as_chunks::<3>().0.iter().enumerate() {
+        for (corner, i) in [0, 2, 1].into_iter().enumerate() {
             let v = tri[i];
-            vertices.push(vector(v.position));
-            normals.push(vector(v.normal));
-            colors.push(Color::from_rgb(v.color[0], v.color[1], v.color[2]));
-            uv.push(Vector2::new(v.uv[0], v.uv[1]));
-            patterns.push(Vector2::new(v.pattern as f32, 0.0));
+            let index = triangle * 3 + corner;
+            vertex_data[index] = vector(v.position);
+            normal_data[index] = vector(v.normal);
+            color_data[index] = Color::from_rgb(v.color[0], v.color[1], v.color[2]);
+            uv_data[index] = Vector2::new(v.uv[0], v.uv[1]);
+            pattern_data[index] = Vector2::new(v.pattern as f32, 0.0);
         }
     }
     vdict! { "vertices" => &vertices, "normals" => &normals, "colors" => &colors, "uv" => &uv, "uv2" => &patterns }

@@ -316,6 +316,7 @@ impl Session {
             });
         }
         self.model.apply(ServerMessage::World3d(Snapshot3d {
+            flying: false,
             seq: 0,
             body: Body {
                 position: [28.5, 7.0, 32.5],

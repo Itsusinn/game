@@ -1,4 +1,4 @@
-use game_simulation::{grid::Grid, step_with_actors};
+use game_simulation::{grid::Grid, step_player_with_actors};
 use protocol::*;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -9,6 +9,7 @@ pub struct Client3d {
     pub player_id: u32,
     pub spawn_rotation: [f32; 2],
     pub body: Body,
+    pub flying: bool,
     pub actors: Vec<Actor3d>,
     pub items: Vec<GroundItem3d>,
     pub hp: i32,
@@ -30,6 +31,7 @@ impl Default for Client3d {
             player_id: 0,
             spawn_rotation: [0.0, -0.1],
             body: Body::default(),
+            flying: false,
             actors: vec![],
             items: vec![],
             hp: 100,
@@ -93,6 +95,7 @@ impl Client3d {
                     self.pending.pop_front();
                 }
                 self.body = s.body;
+                self.flying = s.flying;
                 self.actors = s.actors;
                 self.items = s.items;
                 self.hp = s.hp;
@@ -109,7 +112,15 @@ impl Client3d {
                     .map(|a| a.position)
                     .collect();
                 for &(_, input) in &self.pending {
-                    step_with_actors(&mut self.body, input, |p| self.terrain.solid(p), &obstacles);
+                    if self.terrain.nearby_known(self.body.position) {
+                        step_player_with_actors(
+                            &mut self.body,
+                            input,
+                            self.flying,
+                            |p| self.terrain.solid(p),
+                            &obstacles,
+                        );
+                    }
                 }
             }
             _ => {}
@@ -136,7 +147,15 @@ impl Client3d {
             .filter(|a| a.id != self.player_id)
             .map(|a| a.position)
             .collect();
-        step_with_actors(&mut self.body, input, |p| self.terrain.solid(p), &obstacles);
+        if self.terrain.nearby_known(self.body.position) {
+            step_player_with_actors(
+                &mut self.body,
+                input,
+                self.flying,
+                |p| self.terrain.solid(p),
+                &obstacles,
+            );
+        }
         Ok(())
     }
 }
@@ -163,6 +182,66 @@ mod tests {
         m
     }
     #[test]
+    fn authority_switches_flight_before_replay_and_unknown_teleport_waits_for_chunks() {
+        let mut m = model();
+        let input = PlayerInput {
+            jump: true,
+            sprint: true,
+            ..Default::default()
+        };
+        m.input(input, |_| Ok(())).unwrap();
+        let mut s = Snapshot3d {
+            seq: 0,
+            body: Body {
+                position: [24.0, 15.0, 24.0],
+                ..Default::default()
+            },
+            flying: true,
+            actors: vec![],
+            items: vec![],
+            hp: 100,
+            inventory: PlayerInventory::default(),
+            log: vec![],
+            container: None,
+            container_error: String::new(),
+        };
+        let mut expected = s.body;
+        step_player_with_actors(&mut expected, input, true, |p| m.terrain.solid(p), &[]);
+        m.apply(ServerMessage::World3d(s.clone()));
+        assert!(m.flying);
+        assert_eq!(m.body, expected);
+        assert_eq!(m.pending.len(), 1);
+        s.body.position = [-500.0, 20.0, 500.0];
+        m.apply(ServerMessage::World3d(s.clone()));
+        assert_eq!(
+            m.body, s.body,
+            "unknown destination must not resolve a body inside unknown solid cells"
+        );
+        m.input(input, |_| Ok(())).unwrap();
+        assert_eq!(m.body, s.body);
+        let c = column_at(s.body.position);
+        for z in -1..=1 {
+            for x in -1..=1 {
+                for y in [0, 16] {
+                    m.apply(ServerMessage::Chunk3d {
+                        origin: [(c[0] + x) * 16, y, (c[1] + z) * 16],
+                        blocks: vec![AIR; 4096],
+                    });
+                }
+            }
+        }
+        s.seq = 1;
+        m.apply(ServerMessage::World3d(s.clone()));
+        assert!(m.body.position[1] > s.body.position[1]);
+        assert_eq!(m.pending.len(), 1);
+        s.seq = 2;
+        s.flying = false;
+        m.apply(ServerMessage::World3d(s));
+        assert!(!m.flying);
+        assert!(m.pending.is_empty());
+    }
+
+    #[test]
     fn failed_queue_does_not_predict_and_ack_replays_remaining_input() {
         let mut m = model();
         let old = m.body;
@@ -178,6 +257,7 @@ mod tests {
         m.input(input, |_| Ok(())).unwrap();
         let predicted = m.body;
         m.apply(ServerMessage::World3d(Snapshot3d {
+            flying: false,
             seq: 1,
             body: authoritative,
             actors: vec![],
