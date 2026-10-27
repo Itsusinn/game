@@ -1,6 +1,7 @@
 //! Deterministic, host-independent character movement shared by authority and prediction.
 use protocol::{Body, PlayerInput};
 pub mod grid;
+mod physics;
 pub mod targeting;
 
 pub const DT: f32 = 1.0 / 30.0;
@@ -42,15 +43,6 @@ pub fn step_with_actors(
     solid: impl Fn([i32; 3]) -> bool,
     actors: &[[f32; 3]],
 ) {
-    let blocked = |position: [f32; 3]| {
-        overlaps(position, &solid)
-            || actors.iter().any(|other| {
-                (position[0] - other[0]).abs() < RADIUS * 2.0
-                    && (position[2] - other[2]).abs() < RADIUS * 2.0
-                    && position[1] + HEIGHT > other[1] + 0.001
-                    && position[1] < other[1] + HEIGHT - 0.001
-            })
-    };
     if !input.valid() {
         return;
     }
@@ -64,36 +56,7 @@ pub fn step_with_actors(
         body.velocity[1] = 8.2;
     }
     body.velocity[1] = (body.velocity[1] - 23.0 * DT).max(-20.0);
-    body.grounded = false;
-    // Substeps cap displacement, preventing thin-wall tunnelling while falling.
-    for axis in [0, 2, 1] {
-        let delta = body.velocity[axis] * DT;
-        let count = (delta.abs() / 0.08).ceil().max(1.0) as usize;
-        for _ in 0..count {
-            let start = body.position[axis];
-            body.position[axis] += delta / count as f32;
-            if blocked(body.position) {
-                let end = body.position[axis];
-                let mut lo = 0.0;
-                let mut hi = 1.0;
-                for _ in 0..12 {
-                    let mid = (lo + hi) * 0.5;
-                    body.position[axis] = start + (end - start) * mid;
-                    if blocked(body.position) {
-                        hi = mid;
-                    } else {
-                        lo = mid;
-                    }
-                }
-                body.position[axis] = start + (end - start) * lo;
-                if axis == 1 && delta < 0.0 {
-                    body.grounded = true;
-                }
-                body.velocity[axis] = 0.0;
-                break;
-            }
-        }
-    }
+    physics::move_character(body, &solid, actors);
 }
 
 pub fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -221,10 +184,14 @@ mod tests {
                 ground,
             );
         }
-        assert!((distance(a.position, body().position) - SPEED).abs() < 0.01);
+        assert!(
+            (distance(a.position, body().position) - SPEED).abs() < 0.01,
+            "{a:?} {b:?}"
+        );
         assert!(
             (distance(a.position, body().position) - distance(b.position, body().position)).abs()
-                < 0.01
+                < 0.01,
+            "{a:?} {b:?}"
         );
     }
     #[test]

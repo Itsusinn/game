@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 protocol = { path = "../protocol" }
+rapier3d = { version = "=0.36.1", features = ["enhanced-determinism"] }
