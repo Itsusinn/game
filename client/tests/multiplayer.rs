@@ -10,6 +10,84 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::{oneshot, Mutex};
 
 #[tokio::test]
+async fn stalled_authority_bounds_client_inputs_and_resumes_without_disconnect() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = endpoint.local_addr().unwrap();
+        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
+        let (stop, stopped) = oneshot::channel();
+        let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
+            let _ = stopped.await;
+        }));
+        let (_endpoint, connection) = connect_endpoint(address, cert).await.unwrap();
+        let (mut send, mut recv) = connection.open_bi().await.unwrap();
+        let id = login(&mut send, &mut recv, "Flow control").await;
+        let mut model = game_client_core::voxel::Client3d::default();
+        model.apply(ServerMessage::Welcome3d {
+            player_id: id,
+            seed: 12345,
+            rotation: [0.0; 2],
+        });
+        while !model.ready {
+            model.apply(read_message(&mut recv).await.unwrap());
+        }
+        let mut last_sent = 0;
+        for _ in 0..2 {
+            // Hold the same lock as generation/checkpointing: no authority inputs
+            // can execute while the client keeps sampling at its normal 30 Hz.
+            let stalled = manager.lock().await;
+            let start_seq = last_sent;
+            for _ in 0..40 {
+                let mut message = None;
+                let result = model.input(PlayerInput::default(), |input| {
+                    message = Some(input);
+                    Ok(())
+                });
+                if let Some(message) = message {
+                    result.unwrap();
+                    let ClientMessage::Input3d { seq, .. } = message else {
+                        panic!("expected input");
+                    };
+                    assert_eq!(seq, last_sent + 1);
+                    last_sent = seq;
+                    write_message(&mut send, &message).await.unwrap();
+                } else {
+                    assert!(result.is_err());
+                }
+                tokio::time::sleep(Duration::from_secs_f32(game_simulation::DT)).await;
+            }
+            assert_eq!(last_sent - start_seq, MAX_PENDING_INPUTS as u32);
+            assert_eq!(model.pending.len(), MAX_PENDING_INPUTS);
+            drop(stalled);
+            while !model.pending.is_empty() {
+                model.apply(read_message(&mut recv).await.unwrap());
+            }
+            assert_eq!(manager.lock().await.player_count(), 1);
+        }
+        // The session is still usable for non-movement messages after recovery.
+        write_message(
+            &mut send,
+            &ClientMessage::Chat3d {
+                text: "recovered".into(),
+            },
+        )
+        .await
+        .unwrap();
+        loop {
+            let s = snapshot(&mut recv, last_sent).await;
+            if s.log.iter().any(|entry| entry.text.contains("recovered")) {
+                break;
+            }
+        }
+        connection.close(0u32.into(), b"done");
+        let _ = stop.send(());
+        server.await.unwrap().unwrap();
+    })
+    .await
+    .expect("stalled authority recovery timed out");
+}
+
+#[tokio::test]
 async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();

@@ -197,7 +197,7 @@ impl VoxelWorld {
             "out-of-order input"
         );
         anyhow::ensure!(
-            p.inbox.len() < 16,
+            p.inbox.len() < MAX_PENDING_INPUTS,
             "client sends inputs faster than simulation"
         );
         p.received = seq;
@@ -797,6 +797,30 @@ mod tests {
         assert!(VoxelWorld::load(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"legacy");
     }
+    #[test]
+    fn input_overflow_is_rejected_without_advancing_sequence_or_simulation() {
+        let mut w = VoxelWorld::new(42);
+        let (tx, _rx) = mpsc::channel(64);
+        w.register_player(1, tx).unwrap();
+        let start = w.players[&1].body;
+        for seq in 1..=MAX_PENDING_INPUTS as u32 {
+            w.input(1, seq, PlayerInput::default()).unwrap();
+        }
+        let next = MAX_PENDING_INPUTS as u32 + 1;
+        let error = w.input(1, next, PlayerInput::default()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "client sends inputs faster than simulation"
+        );
+        assert_eq!(w.players[&1].body, start);
+        assert_eq!(w.players[&1].last_seq, 0);
+        assert_eq!(w.players[&1].received, next - 1);
+        w.tick();
+        assert_eq!(w.players[&1].last_seq, 1);
+        w.input(1, next, PlayerInput::default()).unwrap();
+        assert_eq!(w.players[&1].inbox.len(), MAX_PENDING_INPUTS);
+    }
+
     #[test]
     fn server_consumes_at_most_one_input_per_tick_and_acks_execution() {
         let mut w = VoxelWorld::new(42);

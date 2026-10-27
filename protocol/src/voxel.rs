@@ -6,6 +6,9 @@ pub const WORLD_SIZE: [i32; 3] = [64, 32, 64];
 pub const WORLD_HEIGHT: i32 = 128;
 pub const SECTIONS_PER_COLUMN: usize = (WORLD_HEIGHT / CHUNK_EDGE) as usize;
 pub const MAX_LOADED_SECTIONS: usize = 49 * SECTIONS_PER_COLUMN;
+/// Server inbox capacity and maximum client inputs awaiting execution acknowledgement.
+/// Includes inputs still in transport so a stalled server cannot overflow its inbox.
+pub const MAX_PENDING_INPUTS: usize = 16;
 /// Conservative f32 physics/rendering precision limit.
 pub const WORLD_LIMIT: i32 = 32_768;
 pub const VIEW_RADIUS: i32 = 3;

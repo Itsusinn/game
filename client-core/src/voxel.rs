@@ -134,7 +134,10 @@ impl Client3d {
         if !self.ready {
             return Err("Waiting for world data".into());
         }
-        if !input.valid() || self.pending.len() >= 64 || self.next_seq == u32::MAX {
+        if self.pending.len() >= MAX_PENDING_INPUTS {
+            return Err("Waiting for server input acknowledgement".into());
+        }
+        if !input.valid() || self.next_seq == u32::MAX {
             return Err("Input queue unavailable".into());
         }
         let seq = self.next_seq;
@@ -181,6 +184,65 @@ mod tests {
         };
         m
     }
+    #[test]
+    fn unacknowledged_inputs_stop_at_server_capacity_and_resume_after_execution() {
+        let mut m = model();
+        let input = PlayerInput {
+            forward: 1.0,
+            ..Default::default()
+        };
+        let mut first_body = m.body;
+        for seq in 1..=16 {
+            m.input(input, |message| {
+                assert!(matches!(message, ClientMessage::Input3d { seq: sent, .. } if sent == seq));
+                Ok(())
+            })
+            .unwrap();
+            if seq == 1 {
+                first_body = m.body;
+            }
+        }
+        let predicted = m.body;
+        for _ in 0..64 {
+            assert!(m
+                .input(input, |_| panic!("full window must not send"))
+                .is_err());
+            assert_eq!(m.body, predicted);
+            assert_eq!(m.pending.len(), 16);
+            assert_eq!(m.next_seq, 17);
+        }
+        let ack = Snapshot3d {
+            seq: 1,
+            body: first_body,
+            flying: false,
+            actors: vec![],
+            items: vec![],
+            hp: 100,
+            inventory: PlayerInventory::default(),
+            log: vec![],
+            container: None,
+            container_error: String::new(),
+        };
+        m.apply(ServerMessage::World3d(ack.clone()));
+        assert_eq!(m.body, predicted);
+        assert_eq!(m.pending.len(), 15);
+        assert!(m.input(input, |_| Err("transport full".into())).is_err());
+        assert_eq!(m.body, predicted);
+        assert_eq!(m.next_seq, 17);
+        m.input(input, |message| {
+            assert!(matches!(message, ClientMessage::Input3d { seq: 17, .. }));
+            Ok(())
+        })
+        .unwrap();
+        // Repeated/stale snapshots cannot grant additional send capacity.
+        m.apply(ServerMessage::World3d(ack.clone()));
+        m.apply(ServerMessage::World3d(Snapshot3d { seq: 0, ..ack }));
+        assert!(m
+            .input(input, |_| panic!("duplicate ack released capacity"))
+            .is_err());
+        assert_eq!(m.pending.len(), 16);
+    }
+
     #[test]
     fn authority_switches_flight_before_replay_and_unknown_teleport_waits_for_chunks() {
         let mut m = model();
