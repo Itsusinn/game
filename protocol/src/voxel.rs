@@ -10,6 +10,35 @@ pub const WOOD: u8 = 4;
 pub const LEAVES: u8 = 5;
 pub const WATER: u8 = 6;
 pub const PLANK: u8 = 7;
+pub const CHEST: u8 = 8;
+pub const CONTAINER_SLOTS: usize = 24;
+pub const CONTAINER_STACK_LIMIT: u32 = 999;
+pub const CONTAINER_REACH: f32 = 3.5;
+
+/// Container identity is its voxel coordinate, independent of scene/ECS IDs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContainerSnapshot {
+    pub position: [i32; 3],
+    pub revision: u64,
+    pub items: Vec<crate::InventoryEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ContainerCommand {
+    Open {
+        position: [i32; 3],
+    },
+    Close,
+    Transfer {
+        position: [i32; 3],
+        revision: u64,
+        inventory_revision: u64,
+        slot: u8,
+        target: Option<u8>,
+        quantity: u32,
+        deposit: bool,
+    },
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Body {
@@ -66,8 +95,10 @@ pub struct Snapshot3d {
     pub actors: Vec<Actor3d>,
     pub items: Vec<GroundItem3d>,
     pub hp: i32,
-    pub inventory: Vec<crate::InventoryEntry>,
+    pub inventory: crate::PlayerInventory,
     pub log: Vec<crate::LogEntry>,
+    pub container: Option<ContainerSnapshot>,
+    pub container_error: String,
 }
 
 #[cfg(test)]
@@ -109,8 +140,10 @@ mod tests {
             }],
             items: vec![],
             hp: 90,
-            inventory: vec![],
+            inventory: crate::PlayerInventory::default(),
             log: vec![],
+            container: None,
+            container_error: String::new(),
         });
         let bytes = rmp_serde::to_vec(&snapshot).unwrap();
         assert_eq!(

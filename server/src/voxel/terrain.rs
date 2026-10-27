@@ -89,5 +89,6 @@ pub fn generate(seed: u64) -> Grid {
             map.set([x, 5, z], STONE);
         }
     }
+    map.set([26, 7, 30], CHEST);
     map
 }

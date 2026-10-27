@@ -12,6 +12,10 @@ server:
 client:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 run
 
+# 同时启动独立服务端与客户端，客户端退出后保存并关闭服务端
+dev:
+    cargo +nightly -Zscript scripts/dev.rs
+
 # 启动离线漫游
 demo:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 demo
@@ -67,6 +71,10 @@ godot-smoke:
 # 使用隔离服务端检查两个 Godot 桥接实例联机
 godot-multiplayer:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 multiplayer
+
+# 使用隔离世界验证箱子 UI、存取和保存重开
+godot-containers:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 containers
 
 # 导出 Windows 调试客户端
 export-debug:

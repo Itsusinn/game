@@ -59,12 +59,6 @@ func _ready() -> void:
 	badge.size = Vector2(176,82)
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(badge)
-	var footer_bar := ColorRect.new()
-	footer_bar.color = Color(0.04,0.05,0.065,0.93)
-	footer_bar.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	footer_bar.offset_top = -46
-	footer_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(footer_bar)
 	var header := Label.new()
 	header.text = "D / 3D"
 	header.position = Vector2(48, 25)
@@ -202,14 +196,6 @@ func _ready() -> void:
 	feedback.offset_top = -94
 	feedback.offset_bottom = -52
 	feedback.modulate = ACCENT
-	var footer := Label.new()
-	footer.text = "WASD  移动     /     SPACE  跳跃     /     ESC  游戏菜单"
-	footer.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	footer.offset_left = 52
-	footer.offset_top = -34
-	footer.add_theme_font_size_override("font_size", 14)
-	footer.modulate = Palette.MUTED
-	add_child(footer)
 	settings.load("user://settings.cfg")
 	fov_slider.value = clampf(float(settings.get_value("video", "fov", 72)), 55, 100)
 	sensitivity.value = clampf(float(settings.get_value("input", "sensitivity", 1.0)), 0.5, 2.0)
@@ -224,7 +210,7 @@ func _draw() -> void:
 		draw_texture_rect(Backdrop,Rect2(Vector2.ZERO,size),false)
 		draw_rect(Rect2(Vector2.ZERO,size),Color(0.04,0.07,0.10,0.13 if page == "home" else 0.55))
 		draw_colored_polygon(PackedVector2Array([Vector2(0,size.y*0.70),Vector2(size.x*0.445,size.y*0.70),Vector2(size.x*0.49,size.y*0.94),Vector2(0,size.y*0.94)]),Color(0.035,0.05,0.065,0.87))
-	# Header/footer are drawn by a separate overlay so the glass stays below them.
+	# The header is drawn by a separate overlay so the glass stays below it.
 
 func _tile(caption: String, description: String, area: Rect2, callback: Callable, large := false, tint := Palette.PAPER) -> void:
 	var tile := Tile.new()

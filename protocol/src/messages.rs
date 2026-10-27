@@ -1,23 +1,48 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMessage {
-    Input3d { seq: u32, input: crate::PlayerInput },
-    Chat3d { text: String },
-    Login { version: u32, player_name: String },
+    Input3d {
+        seq: u32,
+        input: crate::PlayerInput,
+    },
+    Chat3d {
+        text: String,
+    },
+    Login {
+        version: u32,
+        player_name: String,
+        player_uuid: [u8; 16],
+    },
     Logout,
-    Ping { seq: u32 },
+    Ping {
+        seq: u32,
+    },
+    Container(crate::ContainerCommand),
+    Inventory(crate::InventoryCommand),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ServerMessage {
-    Welcome3d { player_id: u32, seed: u64 },
-    Chunk3d { origin: [i32; 3], blocks: Vec<u8> },
+    Welcome3d {
+        player_id: u32,
+        seed: u64,
+        rotation: [f32; 2],
+    },
+    Chunk3d {
+        origin: [i32; 3],
+        blocks: Vec<u8>,
+    },
     World3d(crate::Snapshot3d),
-    Error { code: u32, text: String },
-    Pong { seq: u32 },
+    Error {
+        code: u32,
+        text: String,
+    },
+    Pong {
+        seq: u32,
+    },
 }
 
 #[cfg(test)]
@@ -40,6 +65,7 @@ mod tests {
         roundtrip(ClientMessage::Login {
             version: PROTOCOL_VERSION,
             player_name: "alice".to_string(),
+            player_uuid: [1; 16],
         });
         roundtrip(ClientMessage::Chat3d {
             text: "hello".to_string(),
@@ -53,6 +79,7 @@ mod tests {
         roundtrip(ServerMessage::Welcome3d {
             player_id: 1,
             seed: 0xDEAD_BEEF,
+            rotation: [0.5, -0.1],
         });
         roundtrip(ServerMessage::Error {
             code: 1,

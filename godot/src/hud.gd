@@ -9,9 +9,23 @@ signal singleplayer_requested
 signal resume_requested
 signal home_requested
 signal quit_requested
+signal container_transfer_requested(request: Dictionary)
+signal inventory_move_requested(revision: int, source: int, target: int, quantity: int)
+signal inventory_quick_move_requested(revision: int, slot: int)
+signal container_close_requested
 
 const MenuScript = preload("res://src/menu.gd")
 const Palette = preload("res://src/interface_theme.gd")
+const ContainerPanel = preload("res://src/container_panel.gd")
+const ItemSlot = preload("res://src/item_slot.gd")
+var hotbar: VBoxContainer
+var hotbar_slots: Array = []
+var held_name: Label
+var container_panel: PanelContainer
+var container_open := false
+var container_wanted := false
+var container_target: Dictionary = {}
+var interaction_hint: Label
 var menu: Control
 var top: PanelContainer
 var bottom: PanelContainer
@@ -24,8 +38,7 @@ var chat: LineEdit
 var status: Label
 var health: Label
 var coordinates: Label
-var inventory: Label
-var journal: Label
+var journal: RichTextLabel
 var reticle: Label
 var hint: Label
 var fov_slider: HSlider
@@ -68,10 +81,10 @@ func _ready() -> void:
 	health_bar.add_theme_stylebox_override("fill",Palette.box(Palette.ACCENT,0))
 	title.add_child(health_bar)
 	bottom = PanelContainer.new()
-	bottom.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	bottom.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
 	bottom.offset_left = 18
-	bottom.offset_right = -18
-	bottom.offset_top = -90
+	bottom.offset_right = 310
+	bottom.offset_top = -62
 	bottom.offset_bottom = -16
 	bottom.add_theme_stylebox_override("panel",Palette.box(Color(0.055,0.065,0.08,0.92),12))
 	root.add_child(bottom)
@@ -79,27 +92,16 @@ func _ready() -> void:
 	bottom.add_child(footer)
 	status = label(footer, "准备就绪", 14)
 	status.modulate = Palette.ACCENT
-	label(footer, "WASD  移动    /    SPACE  跳跃    /    F  近战    /    G  拾取    /    TAB  行囊    /    ESC  菜单", 14)
-	panel = PanelContainer.new()
-	panel.set_anchors_and_offsets_preset(Control.PRESET_RIGHT_WIDE)
-	panel.offset_left = -390
-	panel.offset_right = -18
-	panel.offset_top = 100
-	panel.offset_bottom = -106
+	panel = ContainerPanel.new()
 	root.add_child(panel)
-	var scroll := ScrollContainer.new()
-	panel.add_child(scroll)
-	var column := VBoxContainer.new()
-	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	column.add_theme_constant_override("separation", 10)
-	scroll.add_child(column)
-	label(column, "行囊  /  INVENTORY", 23).add_theme_font_override("font",Palette.display_font())
-	inventory = label(column, "行囊中暂无物品。", 15)
-	inventory.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	column.add_child(HSeparator.new())
+	container_panel = panel
+	var column: VBoxContainer = panel.details
 	label(column, "行动记录  /  LOG", 21).add_theme_font_override("font",Palette.display_font())
-	journal = label(column, "", 14)
-	journal.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	journal = RichTextLabel.new()
+	journal.add_theme_font_size_override("normal_font_size",14)
+	journal.custom_minimum_size = Vector2(225,120)
+	journal.scroll_following = true
+	column.add_child(journal)
 	chat = field(column, "通讯  /  CHAT", "")
 	chat.placeholder_text = "输入消息，按 Enter 发送"
 	chat.text_submitted.connect(func(text: String):
@@ -115,6 +117,34 @@ func _ready() -> void:
 	hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	hint.position += Vector2(-90, 38)
 	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	interaction_hint = label(root, "E  打开箱子", 17)
+	interaction_hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	interaction_hint.position += Vector2(-55, 38)
+	interaction_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	container_panel.transfer_requested.connect(func(request: Dictionary): container_transfer_requested.emit(request))
+	container_panel.move_requested.connect(func(r: int, f: int, t: int, q: int): inventory_move_requested.emit(r,f,t,q))
+	container_panel.quick_move_requested.connect(func(r: int, s: int): inventory_quick_move_requested.emit(r,s))
+	container_panel.close_requested.connect(func(): container_close_requested.emit())
+	hotbar = VBoxContainer.new()
+	hotbar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	hotbar.offset_left = -250
+	hotbar.offset_right = 250
+	hotbar.offset_top = -94
+	hotbar.offset_bottom = -16
+	hotbar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(hotbar)
+	held_name = label(hotbar,"空手",15)
+	held_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	held_name.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var bar := HBoxContainer.new()
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hotbar.add_child(bar)
+	for i in range(9):
+		var slot := ItemSlot.new()
+		slot.number = str(i+1)
+		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		bar.add_child(slot)
+		hotbar_slots.append(slot)
 	menu = MenuScript.new()
 	root.add_child(menu)
 	address = menu.address
@@ -153,20 +183,25 @@ func button(parent: Node, text: String, callback: Callable) -> Button:
 	return result
 
 func update_state(state: Dictionary, captured: bool) -> void:
-	panel.visible = inventory_open and state.ready and not menu.visible
+	panel.visible = (inventory_open or container_open) and state.ready and not menu.visible
+	if panel.visible: panel.update_view(state,container_open)
+	else: panel.clear_selection()
+	hotbar.visible = state.ready and not menu.visible and not panel.visible
+	for i in range(9): hotbar_slots[i].update_slot(state.inventory_slots[i],i == state.selected_slot,false,{})
+	var held: Dictionary = state.inventory_slots[state.selected_slot]
+	held_name.text = "空手" if held.is_empty() else held.name
 	top.visible = state.ready and not menu.visible
-	bottom.visible = top.visible
+	bottom.visible = top.visible and not panel.visible
 	health.text = "HP   %03d / 100" % state.hp if state.ready else ""
 	health_bar.value = state.hp
 	status.text = "离线漫游  /  EXPLORATION" if state.demo else ("单人行动  /  SOLO" if state.get("local_running",false) else "多人行动  /  MULTIPLAYER")
 	if not state.ready: status.text = state.status
+	elif not state.get("container_error", "").is_empty(): status.text = state.container_error
 	var p: Vector3 = state.body_position
 	coordinates.text = "X %.1f   Y %.1f   Z %.1f" % [p.x, p.y, p.z]
-	var rows := PackedStringArray()
-	for item in state.inventory:
-		rows.append("%s  x%d" % [item.name, item.quantity])
-	inventory.text = "行囊中暂无物品。" if rows.is_empty() else "\n".join(rows)
-	journal.text = "\n".join(PackedStringArray(state.journal))
+	var log_text := "\n".join(PackedStringArray(state.journal))
+	if journal.text != log_text: journal.text = log_text
 	chat.editable = state.ready and not state.demo
-	reticle.visible = state.ready and not panel.visible and not menu.visible
-	hint.visible = state.ready and not captured and not panel.visible and not menu.visible
+	reticle.visible = state.ready and not panel.visible and not menu.visible and not container_open
+	hint.visible = state.ready and not captured and not panel.visible and not menu.visible and not container_open
+	interaction_hint.visible = captured and reticle.visible and not container_target.is_empty()

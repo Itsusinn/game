@@ -32,6 +32,8 @@ var pending_action := ""
 var entering_game := false
 var was_ready := false
 var exit_code := 0
+var container_requested_at := 0
+var hotbar_cursor := 0
 
 func _ready() -> void:
 	bridge = GameBridge.new()
@@ -45,6 +47,10 @@ func _ready() -> void:
 	hud.demo_requested.connect(_demo)
 	hud.disconnect_requested.connect(_disconnect_game)
 	hud.chat_requested.connect(func(text: String): bridge.send_chat(text))
+	hud.container_transfer_requested.connect(func(request: Dictionary): bridge.transfer_container(request))
+	hud.inventory_move_requested.connect(func(r: int, f: int, t: int, q: int): bridge.move_inventory(r,f,t,q))
+	hud.inventory_quick_move_requested.connect(func(r: int, s: int): bridge.quick_move_inventory(r,s))
+	hud.container_close_requested.connect(_close_inventory)
 	hud.fov_changed.connect(func(value: float): camera.fov = value)
 	hud.lighting_changed.connect(func(enabled: bool): environment.sdfgi_enabled = enabled)
 	hud.singleplayer_requested.connect(_singleplayer)
@@ -87,13 +93,20 @@ func _parse_options(args: PackedStringArray) -> Dictionary:
 
 func _setup_input() -> void:
 	var mappings := {"forward": [KEY_W, KEY_UP], "back": [KEY_S, KEY_DOWN],
-		"left": [KEY_A, KEY_LEFT], "right": [KEY_D, KEY_RIGHT], "jump": [KEY_SPACE]}
+		"left": [KEY_A, KEY_LEFT], "right": [KEY_D, KEY_RIGHT], "jump": [KEY_SPACE], "interact": [KEY_E]}
 	for action in mappings:
 		if not InputMap.has_action(action): InputMap.add_action(action)
 		for key in mappings[action]:
 			var event := InputEventKey.new()
-			event.physical_keycode = key
+			if action == "interact": event.keycode = key
+			else: event.physical_keycode = key
 			InputMap.action_add_event(action,event)
+	for i in range(9):
+		var action := "hotbar_%d" % i
+		if not InputMap.has_action(action): InputMap.add_action(action)
+		var key := InputEventKey.new()
+		key.keycode = KEY_1 + i
+		InputMap.action_add_event(action,key)
 
 func _setup_world() -> void:
 	material = ShaderMaterial.new()
@@ -184,7 +197,7 @@ func _singleplayer() -> void:
 	_release_mouse()
 	var save_path := OS.get_environment("CDDA_SAVE_PATH")
 	if save_path.is_empty(): save_path = "save/world3d.bin"
-	bridge.start_singleplayer(save_path)
+	bridge.start_singleplayer(save_path,hud.player_name.text)
 	hud.inventory_open = false
 	entering_game = true
 	hud.menu.in_game = false
@@ -216,6 +229,7 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST and is_instance_valid(hud): _leave_game(true)
 
 func _disconnect_game() -> void:
+	_close_container()
 	_release_mouse()
 	bridge.disconnect_game()
 	hud.inventory_open = false
@@ -230,11 +244,45 @@ func _release_mouse() -> void:
 
 func _focus_lost() -> void:
 	focused = false
+	_close_container()
+	_release_mouse()
+
+func _close_container() -> void:
+	if hud.container_wanted or hud.container_open: bridge.close_container()
+	hud.container_wanted = false
+	hud.container_open = false
+	hud.container_panel.hide()
+	hud.container_panel.clear_selection()
+
+func _close_inventory() -> void:
+	_close_container()
+	hud.inventory_open = false
+	_release_mouse()
+
+func _select_hotbar(slot: int) -> void:
+	hotbar_cursor = posmod(slot,9)
+	bridge.select_hotbar(hotbar_cursor)
+
+func _open_container() -> void:
+	var target := bridge.container_target(yaw,pitch)
+	if target.is_empty(): return
+	hud.container_wanted = true
+	container_requested_at = Time.get_ticks_msec()
+	hud.inventory_open = false
+	bridge.open_container(target.position)
 	_release_mouse()
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
+			if hud.panel.visible and not hud.panel.selected.is_empty():
+				hud.panel.clear_selection()
+				get_viewport().set_input_as_handled()
+				return
+			if hud.container_wanted or hud.container_open or hud.inventory_open:
+				_close_inventory()
+				get_viewport().set_input_as_handled()
+				return
 			_release_mouse()
 			if pending_action.is_empty() and not entering_game:
 				if hud.menu.visible:
@@ -246,12 +294,21 @@ func _input(event: InputEvent) -> void:
 					hud.menu.in_game = true
 					hud.menu.show_page("pause")
 			get_viewport().set_input_as_handled()
+		elif event.is_action_pressed("interact") and captured and not hud.menu.visible and not hud.inventory_open:
+			_open_container()
+			get_viewport().set_input_as_handled()
 		elif event.keycode == KEY_TAB and state.get("ready", false) and not hud.menu.visible:
+			_close_container()
 			hud.inventory_open = not hud.inventory_open
 			_release_mouse()
 			var focus_owner := get_viewport().gui_get_focus_owner()
 			if focus_owner: focus_owner.release_focus()
 			get_viewport().set_input_as_handled()
+		elif captured and focused and not hud.menu.visible and not hud.inventory_open and not hud.container_open:
+			for i in range(9):
+				if event.is_action_pressed("hotbar_%d" % i):
+					_select_hotbar(i)
+					get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if hud.menu.visible: return
@@ -263,18 +320,18 @@ func _unhandled_input(event: InputEvent) -> void:
 		yaw = fposmod(yaw + event.relative.x * sensitivity,TAU)
 		pitch = clampf(pitch - event.relative.y * sensitivity,-1.45,1.45)
 	if event is InputEventMouseButton and event.pressed:
-		if event.button_index == MOUSE_BUTTON_LEFT and state.get("ready",false) and not hud.inventory_open:
+		if event.button_index == MOUSE_BUTTON_LEFT and state.get("ready",false) and not hud.inventory_open and not hud.container_wanted and not hud.container_open:
 			if captured: attack = true
 			else:
 				captured = true
 				Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 			get_viewport().set_input_as_handled()
-		elif captured and event.button_index == MOUSE_BUTTON_WHEEL_UP: hud.fov_slider.value -= 2
-		elif captured and event.button_index == MOUSE_BUTTON_WHEEL_DOWN: hud.fov_slider.value += 2
+		elif captured and event.button_index == MOUSE_BUTTON_WHEEL_UP: _select_hotbar(hotbar_cursor-1)
+		elif captured and event.button_index == MOUSE_BUTTON_WHEEL_DOWN: _select_hotbar(hotbar_cursor+1)
 
 func _process(delta: float) -> void:
 	var controls := {"yaw": yaw, "pitch": pitch}
-	if captured and focused and not hud.inventory_open and not hud.menu.visible:
+	if captured and focused and not hud.inventory_open and not hud.menu.visible and not hud.container_wanted and not hud.container_open:
 		controls.forward = Input.get_action_strength("forward") - Input.get_action_strength("back")
 		controls.strafe = Input.get_action_strength("right") - Input.get_action_strength("left")
 		controls.jump = Input.is_action_pressed("jump")
@@ -283,6 +340,15 @@ func _process(delta: float) -> void:
 	attack = false
 	pickup = false
 	state = bridge.advance(delta,controls)
+	var first_ready: bool = state.ready and not was_ready
+	if hud.container_wanted and not state.container.is_empty():
+		hud.container_open = true
+	elif hud.container_open and state.container.is_empty():
+		_close_container()
+	elif hud.container_wanted and Time.get_ticks_msec() - container_requested_at > 3000:
+		_close_container()
+	if not state.ready: _close_container()
+	hud.container_target = bridge.container_target(yaw,pitch) if captured else {}
 	if not pending_action.is_empty():
 		hud.menu.feedback.text = state.status
 		if not state.local_running and not state.shutdown_pending:
@@ -313,6 +379,10 @@ func _process(delta: float) -> void:
 	var next_revision := Vector2i(state.generation,state.revision)
 	if revision.x != next_revision.x:
 		_clear_world()
+	if first_ready and not state.demo:
+		yaw = state.spawn_rotation.x
+		pitch = state.spawn_rotation.y
+		hotbar_cursor = state.selected_slot
 	if state.ready and revision != next_revision:
 		_rebuild_terrain()
 		revision = next_revision
@@ -336,6 +406,7 @@ func _process(delta: float) -> void:
 			_capture()
 
 func _clear_world() -> void:
+	hotbar_cursor = 0
 	for child in terrain_root.get_children():
 		terrain_root.remove_child(child)
 		child.queue_free()

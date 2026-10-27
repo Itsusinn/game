@@ -22,6 +22,13 @@ void fragment() {
         if (p.x < 0.045 || p.y < 0.055) { detail *= 0.74; }
     }
     if (pattern == 4) { detail = 0.75 + noise * 0.35; }
+    if (pattern == 5 || pattern == 6) {
+        detail = 0.87 + noise * 0.18;
+        // Planks, iron corner bands and lid seam; +Z is the latch face.
+        if (mod(pixel.y,4.0) == 0.0) { detail *= 0.78; }
+        if (pixel.x < 2.0 || pixel.x >= 14.0 || pixel.y < 1.0 || pixel.y >= 15.0 || pixel.y == 11.0) { detail *= 0.36; }
+        if (pattern == 6 && pixel.x >= 7.0 && pixel.x <= 8.0 && pixel.y >= 8.0 && pixel.y <= 12.0) { detail = 1.7; }
+    }
     float sharpness = 1.0 - smoothstep(0.04,0.14,max(length(dFdx(UV)),length(dFdy(UV))));
     ALBEDO = COLOR.rgb * mix(1.0,detail,sharpness);
     ROUGHNESS = 0.92;

@@ -41,16 +41,33 @@ pub struct QuicSession {
 }
 impl QuicSession {
     pub fn connect(address: SocketAddr, name: String, certificate: Vec<u8>) -> Result<Self> {
-        Self::connect_with(address, name, move || Ok(certificate))
+        Self::connect_identity(address, name, certificate, crate::identity::default_path())
+    }
+    pub fn connect_identity(
+        address: SocketAddr,
+        name: String,
+        certificate: Vec<u8>,
+        identity: std::path::PathBuf,
+    ) -> Result<Self> {
+        Self::connect_with(address, name, identity, move || Ok(certificate))
     }
     pub fn connect_file(address: SocketAddr, name: String, path: String) -> Result<Self> {
-        Self::connect_with(address, name, move || {
+        Self::connect_file_identity(address, name, path, crate::identity::default_path())
+    }
+    pub fn connect_file_identity(
+        address: SocketAddr,
+        name: String,
+        path: String,
+        identity: std::path::PathBuf,
+    ) -> Result<Self> {
+        Self::connect_with(address, name, identity, move || {
             std::fs::read(&path).with_context(|| format!("read server certificate: {path}"))
         })
     }
     fn connect_with(
         address: SocketAddr,
         name: String,
+        identity: std::path::PathBuf,
         certificate: impl FnOnce() -> Result<Vec<u8>> + Send + 'static,
     ) -> Result<Self> {
         let (outgoing, outgoing_rx) = mpsc::channel(64);
@@ -62,6 +79,15 @@ impl QuicSession {
             .name("game-network".into())
             .spawn(move || {
                 let _finished = Finished(worker_finished);
+                let player_uuid = match crate::identity::load_or_create(&identity) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        let _ = incoming_tx.try_send(NetworkEvent::Disconnected(format!(
+                            "client identity: {e:#}"
+                        )));
+                        return;
+                    }
+                };
                 let certificate = match certificate() {
                     Ok(bytes) => bytes,
                     Err(e) => {
@@ -83,6 +109,7 @@ impl QuicSession {
                     let result = run_session(
                         address,
                         name,
+                        player_uuid,
                         certificate,
                         outgoing_rx,
                         incoming_tx.clone(),
@@ -164,6 +191,7 @@ pub async fn connect_endpoint(
 async fn run_session(
     address: SocketAddr,
     name: String,
+    player_uuid: [u8; 16],
     certificate: Vec<u8>,
     mut outgoing: mpsc::Receiver<ClientMessage>,
     incoming: mpsc::Sender<NetworkEvent>,
@@ -180,13 +208,18 @@ async fn run_session(
             &ClientMessage::Login {
                 version: PROTOCOL_VERSION,
                 player_name: name,
+                player_uuid,
             },
         )
         .await?;
         let read = async {
             loop {
+                let message = read_message(&mut recv).await?;
+                if let ServerMessage::Error { text, .. } = &message {
+                    anyhow::bail!("{text}");
+                }
                 incoming
-                    .send(NetworkEvent::Message(read_message(&mut recv).await?))
+                    .send(NetworkEvent::Message(message))
                     .await
                     .context("UI receiver closed")?;
             }

@@ -68,6 +68,10 @@ pub async fn serve_endpoint(
     tokio::pin!(shutdown);
     let mut tick = tokio::time::interval(std::time::Duration::from_secs_f32(game_simulation::DT));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut connections = tokio::task::JoinSet::new();
+    let mut checkpoint = tokio::time::interval(std::time::Duration::from_secs(30));
+    checkpoint.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    checkpoint.tick().await;
 
     loop {
         tokio::select! {
@@ -76,12 +80,16 @@ pub async fn serve_endpoint(
                 break;
             }
             _ = tick.tick() => { wm.lock().await.tick(); }
+            _ = checkpoint.tick() => {
+                if let Err(e) = wm.lock().await.checkpoint() { error!(error=%e, "world checkpoint failed; previous save preserved"); }
+            }
+            _ = connections.join_next(), if !connections.is_empty() => {}
             incoming = endpoint.accept() => {
                 match incoming {
                     Some(incoming) => {
                         let wm = wm.clone();
                         let peer = incoming.remote_address();
-                        tokio::spawn(
+                        connections.spawn(
                             async move {
                                 match incoming.await {
                                     Ok(connection) => {
@@ -109,6 +117,8 @@ pub async fn serve_endpoint(
     }
 
     endpoint.close(0u32.into(), b"shutdown");
+    // Finish message handlers before the caller takes its final save snapshot.
+    while connections.join_next().await.is_some() {}
     Ok(())
 }
 
@@ -127,6 +137,7 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
         ClientMessage::Login {
             version,
             player_name,
+            player_uuid,
         } => {
             anyhow::ensure!(
                 version == protocol::PROTOCOL_VERSION,
@@ -138,17 +149,41 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
             let (player_tx, player_rx) = mpsc::channel::<ServerMessage>(64);
 
             let world_seed = manager.world_seed;
+            let rotation =
+                match manager.register_profile(pid, player_uuid, player_name.clone(), player_tx) {
+                    Ok(rotation) => rotation,
+                    Err(e) => {
+                        drop(manager);
+                        write_frame(
+                            &mut send,
+                            &rmp_serde::to_vec(&ServerMessage::Error {
+                                code: 409,
+                                text: e.to_string(),
+                            })?,
+                        )
+                        .await?;
+                        let _ = send.finish();
+                        let _ =
+                            tokio::time::timeout(std::time::Duration::from_secs(1), send.stopped())
+                                .await;
+                        return Err(e);
+                    }
+                };
             drop(manager);
-            write_frame(
+            if let Err(e) = write_frame(
                 &mut send,
                 &rmp_serde::to_vec(&ServerMessage::Welcome3d {
                     player_id: pid,
 
                     seed: world_seed,
+                    rotation,
                 })?,
             )
-            .await?;
-            wm.lock().await.register_player(pid, player_tx)?;
+            .await
+            {
+                wm.lock().await.unregister_player(pid);
+                return Err(e);
+            }
             info!(player_id = pid, %player_name, "Player logged in");
             (pid, player_rx)
         }
@@ -207,6 +242,12 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
                 ClientMessage::Chat3d { text } => {
                     wm.lock().await.chat(player_id, text)?;
                 }
+                ClientMessage::Container(command) => {
+                    wm.lock().await.container_command(player_id, command);
+                }
+                ClientMessage::Inventory(command) => {
+                    wm.lock().await.inventory_command(player_id, command);
+                }
                 ClientMessage::Ping { seq } => {
                     let pong = ServerMessage::Pong { seq };
                     let data = rmp_serde::to_vec(&pong)?;
@@ -229,6 +270,9 @@ async fn handle_connection(connection: Connection, wm: Arc<Mutex<VoxelWorld>>) -
     // Cleanup
     let mut wm = wm.lock().await;
     wm.unregister_player(player_id);
+    if let Err(e) = wm.checkpoint() {
+        error!(error=%e, "disconnect checkpoint failed; player retained in memory");
+    }
     forwarder.abort();
     info!(player_id, "Player disconnected");
     connection.close(0u32.into(), b"bye");

@@ -6,12 +6,15 @@ pub struct Client3d {
     pub terrain: Grid,
     pub revision: u64,
     pub player_id: u32,
+    pub spawn_rotation: [f32; 2],
     pub body: Body,
     pub actors: Vec<Actor3d>,
     pub items: Vec<GroundItem3d>,
     pub hp: i32,
-    pub inventory: Vec<InventoryEntry>,
+    pub inventory: PlayerInventory,
     pub log: Vec<LogEntry>,
+    pub container: Option<ContainerSnapshot>,
+    pub container_error: String,
     pub ready: bool,
     pub pending: VecDeque<(u32, PlayerInput)>,
     next_seq: u32,
@@ -23,12 +26,15 @@ impl Default for Client3d {
             terrain: Grid::unknown(),
             revision: 0,
             player_id: 0,
+            spawn_rotation: [0.0, -0.1],
             body: Body::default(),
             actors: vec![],
             items: vec![],
             hp: 100,
-            inventory: vec![],
+            inventory: PlayerInventory::default(),
             log: vec![],
+            container: None,
+            container_error: String::new(),
             ready: false,
             pending: VecDeque::new(),
             next_seq: 1,
@@ -39,9 +45,14 @@ impl Default for Client3d {
 impl Client3d {
     pub fn apply(&mut self, message: ServerMessage) {
         match message {
-            ServerMessage::Welcome3d { player_id, .. } => {
+            ServerMessage::Welcome3d {
+                player_id,
+                rotation,
+                ..
+            } => {
                 *self = Self::default();
                 self.player_id = player_id;
+                self.spawn_rotation = rotation;
             }
             ServerMessage::Chunk3d { origin, blocks } => {
                 if self.terrain.apply_chunk(origin, &blocks) {
@@ -62,6 +73,8 @@ impl Client3d {
                 self.hp = s.hp;
                 self.inventory = s.inventory;
                 self.log = s.log;
+                self.container = s.container;
+                self.container_error = s.container_error;
                 self.ready = self.player_id != 0 && !self.terrain.blocks.contains(&255);
                 let obstacles: Vec<_> = self
                     .actors
@@ -144,8 +157,10 @@ mod tests {
             actors: vec![],
             items: vec![],
             hp: 100,
-            inventory: vec![],
+            inventory: PlayerInventory::default(),
             log: vec![],
+            container: None,
+            container_error: String::new(),
         }));
         assert_eq!(m.body, predicted);
         assert_eq!(m.pending.len(), 1);

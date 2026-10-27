@@ -29,6 +29,8 @@ func run() -> void:
 	root.add_child(b)
 	var address := OS.get_environment("CDDA_TEST_ADDRESS")
 	var certificate := OS.get_environment("CDDA_CERT_PATH")
+	a.set_identity_path(certificate + ".alice.uuid")
+	b.set_identity_path(certificate + ".bob.uuid")
 	a.connect_game(address,"GodotAlice",certificate)
 	b.connect_game(address,"GodotBob",certificate)
 	var ready_a := await poll_ready(a)

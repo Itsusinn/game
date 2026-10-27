@@ -1,24 +1,33 @@
+mod containers;
+mod inventory;
+mod persistence;
+pub use persistence::lock_world;
 mod terrain;
 use anyhow::{Context, Result};
 use game_simulation::{clear_line, distance, grid::Grid, overlaps, step_with_actors};
 use protocol::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     path::Path,
 };
 use tokio::sync::mpsc;
 
 struct Player {
+    uuid: Option<[u8; 16]>,
+    name: String,
     body: Body,
     hp: i32,
     yaw: f32,
+    pitch: f32,
     last_seq: u32,
     received: u32,
     inbox: VecDeque<(u32, PlayerInput)>,
     tx: mpsc::Sender<ServerMessage>,
-    inventory: Vec<InventoryEntry>,
+    inventory: PlayerInventory,
     attack_tick: u64,
+    open_container: Option<[i32; 3]>,
+    container_error: String,
 }
 struct Npc {
     actor: Actor3d,
@@ -35,12 +44,16 @@ pub struct VoxelWorld {
     log: Vec<LogEntry>,
     next_id: u32,
     tick: u64,
+    containers: BTreeMap<[i32; 3], ContainerSnapshot>,
+    saved_players: BTreeMap<[u8; 16], crate::player_data::PlayerData>,
+    save_path: Option<std::path::PathBuf>,
 }
 impl VoxelWorld {
     pub fn new(seed: u64) -> Self {
         Self::with_map(seed, terrain::generate(seed))
     }
     fn with_map(seed: u64, terrain: Grid) -> Self {
+        let containers = containers::empty_containers(&terrain);
         let mut npcs = hecs::World::new();
         for (i, p) in [[31.5, 7.0, 21.5], [41.5, 7.0, 27.5], [19.5, 7.0, 42.5]]
             .into_iter()
@@ -75,6 +88,9 @@ impl VoxelWorld {
             log: vec![],
             next_id: 1,
             tick: 0,
+            containers,
+            saved_players: BTreeMap::new(),
+            save_path: None,
         }
     }
     pub fn player_count(&self) -> usize {
@@ -104,6 +120,8 @@ impl VoxelWorld {
         self.players.insert(
             id,
             Player {
+                uuid: None,
+                name: String::new(),
                 body: Body {
                     position,
                     grounded: true,
@@ -111,18 +129,30 @@ impl VoxelWorld {
                 },
                 hp: 100,
                 yaw: 0.0,
+                pitch: -0.1,
                 last_seq: 0,
                 received: 0,
                 inbox: VecDeque::new(),
                 tx,
-                inventory: vec![],
+                inventory: PlayerInventory::default(),
                 attack_tick: 0,
+                open_container: None,
+                container_error: String::new(),
             },
         );
         Ok(())
     }
     pub fn unregister_player(&mut self, id: u32) {
-        self.players.remove(&id);
+        if let Some(p) = self.players.remove(&id) {
+            if let Some(uuid) = p.uuid {
+                match p.saved_data(uuid) {
+                    Ok(data) => {
+                        self.saved_players.insert(uuid, data);
+                    }
+                    Err(e) => tracing::error!(error=%e, "cannot capture disconnected player"),
+                }
+            }
+        }
     }
     fn spawn_position(&self, exclude: u32) -> Option<[f32; 3]> {
         (0..16)
@@ -210,10 +240,12 @@ impl VoxelWorld {
             } else {
                 PlayerInput {
                     yaw: p.yaw,
+                    pitch: p.pitch,
                     ..PlayerInput::default()
                 }
             };
             p.yaw = input.yaw;
+            p.pitch = input.pitch;
             step_with_actors(&mut p.body, input, |b| self.terrain.solid(b), &obstacles);
             if let Some(a) = occupants.iter_mut().find(|a| a.0 == id) {
                 a.1 = p.body.position;
@@ -279,6 +311,7 @@ impl VoxelWorld {
             .map(|(&id, _)| id)
             .collect();
         for id in dead {
+            self.players.get_mut(&id).unwrap().open_container = None;
             if let Some(position) = self.spawn_position(id) {
                 let p = self.players.get_mut(&id).unwrap();
                 p.body = Body {
@@ -287,6 +320,14 @@ impl VoxelWorld {
                     ..Default::default()
                 };
                 p.hp = 100;
+            }
+        }
+        for p in self.players.values_mut() {
+            if p.open_container.is_some_and(|position| {
+                !game_simulation::container_reachable(&self.terrain, p.body.position, position)
+            }) {
+                p.open_container = None;
+                p.container_error = "距离箱子过远或被遮挡，已关闭。".into();
             }
         }
         let mut actors: Vec<_> = self
@@ -314,6 +355,10 @@ impl VoxelWorld {
                     hp: p.hp,
                     inventory: p.inventory.clone(),
                     log: self.log.clone(),
+                    container: p
+                        .open_container
+                        .and_then(|pos| self.containers.get(&pos).cloned()),
+                    container_error: p.container_error.clone(),
                 }))
                 .is_err()
             {
@@ -321,7 +366,7 @@ impl VoxelWorld {
             }
         }
         for id in slow {
-            self.players.remove(&id);
+            self.unregister_player(id);
         }
     }
     fn action(&mut self, id: u32, input: PlayerInput) {
@@ -338,16 +383,7 @@ impl VoxelWorld {
                         |b| self.terrain.solid(b),
                     )
             }) {
-                let item = self.items.remove(i);
-                self.players
-                    .get_mut(&id)
-                    .unwrap()
-                    .inventory
-                    .push(InventoryEntry {
-                        name: item.name.clone(),
-                        quantity: 1,
-                    });
-                self.note(format!("Player {id} picked up {}.", item.name));
+                self.pickup_item(id, i);
             }
         }
         if !input.attack || self.tick < self.players[&id].attack_tick + 12 {
@@ -408,29 +444,110 @@ impl VoxelWorld {
         anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
         anyhow::ensure!(
-            saved.version == 1 && saved.size == WORLD_SIZE,
+            matches!(saved.version, 1..=4) && saved.size == WORLD_SIZE,
             "unsupported 3D save version/dimensions"
         );
+        if saved.version == 4 {
+            anyhow::ensure!(
+                saved.blocks.is_empty() && saved.containers.is_empty() && saved.items.is_none(),
+                "flat data in chunk-based world"
+            );
+            let generation = saved.chunk_archive.context("missing chunk checkpoint")?;
+            anyhow::ensure!(
+                saved.player_archive.as_ref() == Some(&generation),
+                "chunk/player checkpoint mismatch"
+            );
+            anyhow::ensure!(
+                uuid::Uuid::parse_str(&generation)?.to_string() == generation,
+                "invalid chunk checkpoint reference"
+            );
+            let archive = crate::chunk_data::read(
+                &path
+                    .with_extension("chunks")
+                    .join(format!("{generation}.rkyv")),
+            )?;
+            anyhow::ensure!(
+                archive.generation == generation && archive.seed == saved.seed,
+                "chunk checkpoint identity mismatch"
+            );
+            let decoded = archive.restore()?;
+            let mut world = Self::with_map(saved.seed, decoded.terrain);
+            world.restore_containers(decoded.containers)?;
+            world.load_player_checkpoint(path, generation, decoded.items)?;
+            world.tick = archive.last_update;
+            return Ok(world);
+        }
         anyhow::ensure!(
-            saved.blocks.len() == (64 * 32 * 64) && saved.blocks.iter().all(|b| *b <= PLANK),
+            saved.chunk_archive.is_none(),
+            "unexpected chunk reference in legacy world"
+        );
+        anyhow::ensure!(
+            saved.blocks.len() == (64 * 32 * 64)
+                && saved
+                    .blocks
+                    .iter()
+                    .all(|b| *b <= if saved.version == 1 { PLANK } else { CHEST }),
             "invalid voxel data"
         );
-        Ok(Self::with_map(
+        let mut world = Self::with_map(
             saved.seed,
             Grid {
                 blocks: saved.blocks,
             },
-        ))
+        );
+        if saved.version == 1 {
+            anyhow::ensure!(
+                saved.containers.is_empty(),
+                "v1 save contains unexpected container data"
+            );
+            world.add_migration_chest()?;
+            containers::backup_version(path, &bytes, 1)?;
+        } else {
+            world.restore_containers(saved.containers)?;
+        }
+        if saved.version == 3 {
+            world.load_player_checkpoint(
+                path,
+                saved.player_archive.context("missing player checkpoint")?,
+                saved.items.context("missing saved ground items")?,
+            )?;
+            containers::backup_version(path, &bytes, 3)?;
+        } else {
+            anyhow::ensure!(
+                saved.player_archive.is_none() && saved.items.is_none(),
+                "unexpected player data in legacy world"
+            );
+            if saved.version == 2 {
+                containers::backup_version(path, &bytes, 2)?;
+            }
+        }
+        Ok(world)
     }
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
+        let player_archive = self.write_player_checkpoint(path)?;
+        let chunks = crate::chunk_data::ChunkArchive::capture(
+            &self.terrain,
+            &self.containers,
+            &self.items,
+            self.world_seed,
+            player_archive.clone(),
+            self.tick,
+        )?;
+        let folder = path.with_extension("chunks");
+        std::fs::create_dir_all(&folder)?;
+        crate::chunk_data::write_new(&folder.join(format!("{player_archive}.rkyv")), &chunks)?;
         let saved = Save {
-            version: 1,
+            version: 4,
             size: WORLD_SIZE,
             seed: self.world_seed,
-            blocks: self.terrain.blocks.clone(),
+            blocks: vec![],
+            containers: vec![],
+            chunk_archive: Some(player_archive.clone()),
+            player_archive: Some(player_archive),
+            items: None,
         };
         let mut data = b"DNG3D001".to_vec();
         data.extend(rmp_serde::to_vec(&saved)?);
@@ -453,6 +570,14 @@ struct Save {
     size: [i32; 3],
     seed: u64,
     blocks: Vec<u8>,
+    #[serde(default)]
+    containers: Vec<ContainerSnapshot>,
+    #[serde(default)]
+    player_archive: Option<String>,
+    #[serde(default)]
+    items: Option<Vec<GroundItem3d>>,
+    #[serde(default)]
+    chunk_archive: Option<String>,
 }
 
 #[cfg(test)]
@@ -483,14 +608,10 @@ mod tests {
             attack_tick: 0,
         },));
         w.players.get_mut(&1).unwrap().hp = 8;
-        w.players
-            .get_mut(&1)
-            .unwrap()
-            .inventory
-            .push(InventoryEntry {
-                name: "Supplies".into(),
-                quantity: 1,
-            });
+        w.players.get_mut(&1).unwrap().inventory.slots[0] = Some(InventoryEntry {
+            name: "Supplies".into(),
+            quantity: 1,
+        });
         w.tick = 29;
         w.tick();
         assert_eq!(
@@ -500,7 +621,10 @@ mod tests {
         w.tick = 59;
         w.tick();
         assert_eq!(w.players[&1].hp, 100, "lethal damage respawns player");
-        assert_eq!(w.players[&1].inventory[0].quantity, 1);
+        assert_eq!(
+            w.players[&1].inventory.slots[0].as_ref().unwrap().quantity,
+            1
+        );
         assert!(!overlaps(w.players[&1].body.position, &|p| w
             .terrain
             .solid(p)));

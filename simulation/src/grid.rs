@@ -45,7 +45,7 @@ impl Grid {
     }
     pub fn apply_chunk(&mut self, origin: [i32; 3], blocks: &[u8]) -> bool {
         if blocks.len() != 4096
-            || blocks.iter().any(|b| *b > protocol::PLANK)
+            || blocks.iter().any(|b| *b > protocol::CHEST)
             || origin
                 .iter()
                 .zip(WORLD_SIZE)

@@ -1,6 +1,7 @@
 # Local game state and build/export output
 /target/
 /save/
+/godot/save/
 *.log
 .env
 .env.*

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer')]
+    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers')]
     [string]$Action = 'run',
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$GameArgs
@@ -40,6 +40,10 @@ function Build-Extension([bool]$Release) {
 
 Build-Extension $false
 if ($Action -eq 'build') { exit 0 }
+if ($Action -eq 'containers') {
+    & $godotExe --headless --path godot --script res://tests/containers.gd
+    exit $LASTEXITCODE
+}
 if ($Action -eq 'smoke') {
     & $godotExe --headless --path godot --editor --import --quit
     if ($LASTEXITCODE -ne 0) { throw 'Godot import failed.' }

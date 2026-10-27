@@ -1,4 +1,6 @@
+pub mod inventory;
 pub mod messages;
+pub use inventory::*;
 pub mod types;
 
 pub use messages::*;

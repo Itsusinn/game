@@ -41,6 +41,7 @@ fn wait(session: &mut Session, done: impl Fn(&Session) -> bool) {
 fn local_world_connects_plays_saves_unlocks_and_reopens() {
     let path = test_path("lifecycle");
     let mut session = Session::default();
+    session.identity_path = path.with_extension("client.uuid");
     session.start_singleplayer(path.clone());
     wait(&mut session, |s| s.model.ready);
     assert!(!session.demo);
@@ -64,7 +65,19 @@ fn local_world_connects_plays_saves_unlocks_and_reopens() {
         .log
         .iter()
         .any(|e| e.text.contains("singleplayer session")));
+    session.inventory(protocol::InventoryCommand::Move {
+        revision: session.model.inventory.revision,
+        from: 0,
+        to: 35,
+        quantity: 1,
+    });
+    wait(&mut session, |s| s.model.inventory.slots[35].is_some());
+    session.inventory(protocol::InventoryCommand::Select { slot: 8 });
+    wait(&mut session, |s| s.model.inventory.selected == 8);
+    let inventory = session.model.inventory.slots.clone();
+    let position = session.model.body.position;
     let mut other = Session::default();
+    other.identity_path = path.with_extension("other.uuid");
     other.start_singleplayer(path.clone());
     wait(&mut other, |s| !s.local_running());
     assert!(other.local_error, "same save must be locked");
@@ -75,8 +88,16 @@ fn local_world_connects_plays_saves_unlocks_and_reopens() {
     assert!(!session.local_error, "{}", session.status);
     assert!(session.transport.is_none());
     server::voxel::VoxelWorld::load(&path).unwrap();
+    // A new client session reads the same local UUID even after changing name.
+    session = Session::default();
+    session.identity_path = path.with_extension("client.uuid");
+    session.name = "Renamed".into();
     session.start_singleplayer(path);
     wait(&mut session, |s| s.model.ready);
+    assert_eq!(session.model.inventory.slots, inventory);
+    assert_eq!(session.model.inventory.selected, 8);
+    assert!(session.model.items.is_empty());
+    assert!(game_simulation::distance(session.model.body.position, position) < 0.2);
     session.disconnect();
     wait(&mut session, |s| {
         !s.local_running() && !s.shutdown_pending()
@@ -88,6 +109,7 @@ fn corrupt_save_is_reported_and_preserved() {
     let path = test_path("corrupt");
     std::fs::write(&path, b"invalid world").unwrap();
     let mut session = Session::default();
+    session.identity_path = path.with_extension("client.uuid");
     session.start_singleplayer(path.clone());
     wait(&mut session, |s| !s.local_running());
     assert!(session.local_error);
@@ -101,6 +123,7 @@ fn save_failure_is_reported_without_replacing_previous_map() {
     server::voxel::VoxelWorld::new(12345).save(&path).unwrap();
     let original = std::fs::read(&path).unwrap();
     let mut session = Session::default();
+    session.identity_path = path.with_extension("client.uuid");
     session.start_singleplayer(path.clone());
     wait(&mut session, |s| s.model.ready);
     std::fs::create_dir(path.with_extension("tmp")).unwrap();
@@ -117,6 +140,7 @@ fn save_failure_is_reported_without_replacing_previous_map() {
 fn cancel_during_start_does_not_connect_a_stale_session() {
     let path = test_path("cancel");
     let mut session = Session::default();
+    session.identity_path = path.with_extension("client.uuid");
     session.start_singleplayer(path.clone());
     session.disconnect();
     wait(&mut session, |s| !s.local_running());

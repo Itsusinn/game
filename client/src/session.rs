@@ -10,6 +10,7 @@ pub struct Session {
     pub transport: Option<Box<dyn Transport>>,
     pub address: String,
     pub name: String,
+    pub identity_path: std::path::PathBuf,
     pub certificate: String,
     pub status: String,
     pub demo: bool,
@@ -25,6 +26,7 @@ impl Default for Session {
             transport: None,
             address: "127.0.0.1:9876".into(),
             name: "Explorer".into(),
+            identity_path: crate::identity::default_path(),
             certificate: "save/server.cert.der".into(),
             status: "Connect to explore the 3D world.".into(),
             demo: false,
@@ -77,10 +79,11 @@ impl Session {
         }
         self.local_error = false;
         let result = (|| -> anyhow::Result<QuicSession> {
-            QuicSession::connect_file(
+            QuicSession::connect_file_identity(
                 self.address.parse()?,
                 self.name.clone(),
                 self.certificate.clone(),
+                self.identity_path.clone(),
             )
         })();
         match result {
@@ -112,7 +115,12 @@ impl Session {
         if let Some(server) = &mut self.local_server {
             match server.poll() {
                 Some(LocalEvent::Ready(address, certificate)) if !server.stopping => {
-                    match QuicSession::connect(address, self.name.clone(), certificate) {
+                    match QuicSession::connect_identity(
+                        address,
+                        self.name.clone(),
+                        certificate,
+                        self.identity_path.clone(),
+                    ) {
                         Ok(transport) => {
                             self.transport = Some(Box::new(transport));
                         }
@@ -191,6 +199,28 @@ impl Session {
             }
         }
     }
+    pub fn container(&mut self, command: ContainerCommand) {
+        if let Some(t) = &self.transport {
+            if let Err(e) = t.send(ClientMessage::Container(command)) {
+                self.model.container_error = e;
+            }
+        }
+    }
+    pub fn inventory(&mut self, command: InventoryCommand) {
+        if let Some(t) = &self.transport {
+            if let Err(e) = t.send(ClientMessage::Inventory(command)) {
+                self.model.container_error = e;
+            }
+        }
+    }
+    pub fn container_target(&self, yaw: f32, pitch: f32) -> Option<[i32; 3]> {
+        game_simulation::targeted_container(
+            &self.model.terrain,
+            self.model.body.position,
+            yaw,
+            pitch,
+        )
+    }
     pub fn load_demo(&mut self) {
         self.disconnect();
         if self.local_running() {
@@ -240,6 +270,7 @@ impl Session {
         self.model.apply(ServerMessage::Welcome3d {
             player_id: 1,
             seed: 0,
+            rotation: [0.0, -0.1],
         });
         for origin in Grid::origins() {
             self.model.apply(ServerMessage::Chunk3d {
@@ -268,8 +299,10 @@ impl Session {
                 name: "Supplies".into(),
             }],
             hp: 100,
-            inventory: vec![],
+            inventory: PlayerInventory::default(),
             log: vec![],
+            container: None,
+            container_error: String::new(),
         }));
     }
 }

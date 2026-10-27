@@ -20,7 +20,14 @@ struct GameBridge {
 #[godot_api]
 impl GameBridge {
     #[func]
-    fn start_singleplayer(&mut self, path: GString) {
+    fn set_identity_path(&mut self, path: GString) {
+        if self.session.transport.is_none() && !self.session.local_running() {
+            self.session.identity_path = path.to_string().into();
+        }
+    }
+    #[func]
+    fn start_singleplayer(&mut self, path: GString, name: GString) {
+        self.session.name = name.to_string();
         self.session.start_singleplayer(path.to_string().into());
         self.reset_motion();
     }
@@ -59,8 +66,121 @@ impl GameBridge {
     }
 
     #[func]
+    fn container_target(&self, yaw: f32, pitch: f32) -> VarDictionary {
+        let m = &self.session.model;
+        if self.session.demo || !m.ready {
+            return VarDictionary::new();
+        }
+        self.session.container_target(yaw, pitch).map_or_else(
+            VarDictionary::new,
+            |p| vdict! { "position" => Vector3i::new(p[0],p[1],p[2]) },
+        )
+    }
+
+    #[func]
+    fn open_container(&mut self, position: Vector3i) {
+        self.session.container(protocol::ContainerCommand::Open {
+            position: [position.x, position.y, position.z],
+        });
+    }
+
+    #[func]
+    fn close_container(&mut self) {
+        self.session.container(protocol::ContainerCommand::Close);
+    }
+
+    #[func]
+    fn transfer_container(&mut self, request: VarDictionary) {
+        let get = |key: &str| request.get(key).and_then(|v| v.try_to::<i64>().ok());
+        let Some(position) = request
+            .get("position")
+            .and_then(|v| v.try_to::<Vector3i>().ok())
+        else {
+            return;
+        };
+        let (Some(revision), Some(inventory_revision), Some(slot), Some(quantity)) = (
+            get("revision"),
+            get("inventory_revision"),
+            get("slot"),
+            get("quantity"),
+        ) else {
+            return;
+        };
+        let (Ok(revision), Ok(inventory_revision), Ok(slot), Ok(quantity)) = (
+            u64::try_from(revision),
+            u64::try_from(inventory_revision),
+            u8::try_from(slot),
+            u32::try_from(quantity),
+        ) else {
+            return;
+        };
+        let target = match get("target") {
+            Some(-1) | None => None,
+            Some(i) => {
+                let Ok(i) = u8::try_from(i) else {
+                    return;
+                };
+                Some(i)
+            }
+        };
+        let Some(deposit) = request.get("deposit").and_then(|v| v.try_to::<bool>().ok()) else {
+            return;
+        };
+        self.session
+            .container(protocol::ContainerCommand::Transfer {
+                position: [position.x, position.y, position.z],
+                revision,
+                inventory_revision,
+                slot,
+                target,
+                quantity,
+                deposit,
+            });
+    }
+
+    #[func]
+    fn select_hotbar(&mut self, slot: i64) {
+        if let Ok(slot) = u8::try_from(slot) {
+            self.session
+                .inventory(protocol::InventoryCommand::Select { slot });
+        }
+    }
+
+    #[func]
+    fn move_inventory(&mut self, revision: i64, from: i64, to: i64, quantity: i64) {
+        if let (Ok(revision), Ok(from), Ok(to), Ok(quantity)) = (
+            u64::try_from(revision),
+            u8::try_from(from),
+            u8::try_from(to),
+            u32::try_from(quantity),
+        ) {
+            self.session.inventory(protocol::InventoryCommand::Move {
+                revision,
+                from,
+                to,
+                quantity,
+            });
+        }
+    }
+
+    #[func]
+    fn quick_move_inventory(&mut self, revision: i64, slot: i64) {
+        if let (Ok(revision), Ok(slot)) = (u64::try_from(revision), u8::try_from(slot)) {
+            self.session
+                .inventory(protocol::InventoryCommand::QuickMove { revision, slot });
+        }
+    }
+
+    #[func]
     fn advance(&mut self, delta: f64, controls: VarDictionary) -> VarDictionary {
+        let was_ready = self.session.model.ready;
         self.session.tick();
+        if !was_ready && self.session.model.ready {
+            // Give the host one frame to adopt the restored camera before it
+            // submits the first input of the new connection.
+            self.movement.sync(&self.session);
+            return self.snapshot();
+        }
         let number = |key: &str| {
             controls
                 .get(key)
@@ -124,6 +244,27 @@ impl GameBridge {
             })
             .collect();
         let journal: VarArray = m.log.iter().map(|e| e.text.to_variant()).collect();
+        let inventory_slots: VarArray = m
+            .inventory
+            .slots
+            .iter()
+            .map(|slot| {
+                slot.as_ref().map_or_else(
+                    || VarDictionary::new().to_variant(),
+                    |i| {
+                        vdict! { "name" => i.name.as_str(), "quantity" => i64::from(i.quantity) }
+                            .to_variant()
+                    },
+                )
+            })
+            .collect();
+        let container = m.container.as_ref().map_or_else(VarDictionary::new, |c| {
+            let items: VarArray = c.items.iter().map(|i| vdict! {
+                "name" => i.name.as_str(), "quantity" => i64::from(i.quantity)
+            }.to_variant()).collect();
+            vdict! { "position" => Vector3i::new(c.position[0],c.position[1],c.position[2]),
+                "revision" => c.revision as i64, "items" => &items, "capacity" => protocol::CONTAINER_SLOTS as i64 }
+        });
         vdict! {
             "ready" => m.ready, "demo" => self.session.demo,
             "local_running" => self.session.local_running(), "local_error" => self.session.local_error,
@@ -133,6 +274,10 @@ impl GameBridge {
             "position" => vector(self.movement.position()), "body_position" => vector(m.body.position),
             "grounded" => m.body.grounded, "hp" => m.hp, "player_id" => i64::from(m.player_id),
             "pending" => m.pending.len() as i64,
+            "spawn_rotation" => Vector2::new(m.spawn_rotation[0], m.spawn_rotation[1]),
+            "inventory_slots" => &inventory_slots, "inventory_revision" => m.inventory.revision as i64,
+            "selected_slot" => i64::from(m.inventory.selected), "stack_limit" => protocol::ITEM_STACK_LIMIT,
+            "container" => &container, "container_error" => m.container_error.as_str(),
             "actors" => &actors, "items" => &items, "inventory" => &inventory, "journal" => &journal
         }
     }

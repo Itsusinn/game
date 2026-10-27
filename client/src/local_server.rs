@@ -70,19 +70,13 @@ async fn run(
         std::fs::create_dir_all(parent)?;
     }
     // Held until save completes; a second local client must not overwrite this world.
-    let lock_path = path.with_extension("bin.lock");
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(lock_path)?;
-    lock.try_lock()
-        .context("this single-player world is already open")?;
-    let world = if path.exists() {
+    let _lock = server::voxel::lock_world(&path)?;
+    let mut world = if path.exists() {
         VoxelWorld::load(&path)?
     } else {
         VoxelWorld::new(12345)
     };
+    world.set_save_path(path.clone());
     let manager = Arc::new(Mutex::new(world));
     let (endpoint, certificate) = network::make_server_endpoint("127.0.0.1:0".parse()?)?;
     tx.send(LocalEvent::Ready(endpoint.local_addr()?, certificate))

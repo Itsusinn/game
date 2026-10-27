@@ -18,6 +18,9 @@ serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-futures = "0.2"
+rkyv = { version = "=0.8.18", features = ["little_endian", "pointer_width_32", "aligned"] }
+memmap2 = "=0.9.12"
+uuid = { version = "1.29", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

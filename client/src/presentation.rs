@@ -31,6 +31,7 @@ pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
                         LEAVES => ([0.33, 0.51, 0.27], 4),
                         WATER => ([0.29, 0.49, 0.58], 0),
                         PLANK => ([0.65, 0.51, 0.33], 1),
+                        CHEST => ([0.62, 0.39, 0.18], if face == 5 { 6 } else { 5 }),
                         _ => ([0.5, 0.5, 0.5], 0),
                     };
                     mesh.block_face(

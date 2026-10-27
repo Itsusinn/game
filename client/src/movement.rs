@@ -195,12 +195,14 @@ mod tests {
         let displayed = movement.position();
         let predicted = session.model.body;
         session.model.apply(ServerMessage::World3d(Snapshot3d {
+            container: None,
+            container_error: String::new(),
             seq: 1,
             body: acknowledged,
             actors: session.model.actors.clone(),
             items: vec![],
             hp: 100,
-            inventory: vec![],
+            inventory: protocol::PlayerInventory::default(),
             log: vec![],
         }));
         movement.advance(&mut session, 0.0, forward);

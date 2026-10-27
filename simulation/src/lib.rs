@@ -108,9 +108,85 @@ pub fn clear_line(a: [f32; 3], b: [f32; 3], solid: impl Fn([i32; 3]) -> bool) ->
     })
 }
 
+/// Shared interaction rule; the target voxel itself is allowed to terminate sight.
+pub fn container_reachable(map: &grid::Grid, feet: [f32; 3], target: [i32; 3]) -> bool {
+    let eye = [feet[0], feet[1] + EYE_HEIGHT, feet[2]];
+    let center = target.map(|v| v as f32 + 0.5);
+    map.get(target) == protocol::CHEST
+        && distance(eye, center) <= protocol::CONTAINER_REACH
+        && clear_line(eye, center, |p| p != target && map.solid(p))
+}
+
+/// Traverse voxels along the crosshair ray, stopping at the first solid block.
+pub fn targeted_container(
+    map: &grid::Grid,
+    feet: [f32; 3],
+    yaw: f32,
+    pitch: f32,
+) -> Option<[i32; 3]> {
+    if !feet.iter().all(|v| v.is_finite()) || !yaw.is_finite() || !pitch.is_finite() {
+        return None;
+    }
+    let eye = [feet[0], feet[1] + EYE_HEIGHT, feet[2]];
+    let direction = [
+        yaw.sin() * pitch.cos(),
+        pitch.sin(),
+        -yaw.cos() * pitch.cos(),
+    ];
+    let mut cell = eye.map(|v| v.floor() as i32);
+    let step = direction.map(|d| if d >= 0.0 { 1 } else { -1 });
+    let delta = direction.map(|d| {
+        if d.abs() < 1e-6 {
+            f32::INFINITY
+        } else {
+            1.0 / d.abs()
+        }
+    });
+    let mut next: [f32; 3] = std::array::from_fn(|i| {
+        if delta[i].is_infinite() {
+            f32::INFINITY
+        } else {
+            ((cell[i] + i32::from(step[i] > 0)) as f32 - eye[i]) / direction[i]
+        }
+    });
+    for _ in 0..32 {
+        if map.solid(cell) {
+            return container_reachable(map, feet, cell).then_some(cell);
+        }
+        let axis = (0..3).min_by(|&a, &b| next[a].total_cmp(&next[b]))?;
+        if next[axis] > protocol::CONTAINER_REACH {
+            return None;
+        }
+        cell[axis] += step[axis];
+        next[axis] += delta[axis];
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chest_targeting_stops_at_walls_and_respects_reach() {
+        let mut map = grid::Grid::empty();
+        map.set([10, 7, 10], protocol::CHEST);
+        let feet = [10.5, 7.0, 12.5];
+        let pitch = (-1.08f32).atan2(2.0);
+        assert_eq!(
+            targeted_container(&map, feet, 0.0, pitch),
+            Some([10, 7, 10])
+        );
+        assert_eq!(
+            targeted_container(&map, feet, std::f32::consts::PI, pitch),
+            None
+        );
+        map.set([10, 8, 11], protocol::STONE);
+        assert_eq!(targeted_container(&map, feet, 0.0, pitch), None);
+        assert!(!container_reachable(&map, feet, [10, 7, 10]));
+        map.set([10, 8, 11], protocol::AIR);
+        assert!(!container_reachable(&map, [10.5, 7.0, 15.5], [10, 7, 10]));
+        assert!(map.solid([10, 7, 10]));
+    }
     fn ground(p: [i32; 3]) -> bool {
         p[1] < 0
     }
@@ -229,3 +305,4 @@ mod tests {
         assert!(b.position[1] >= -0.002);
     }
 }
+pub mod inventory;

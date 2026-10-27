@@ -84,6 +84,7 @@ func run() -> void:
 	var previous_save := OS.get_environment("CDDA_SAVE_PATH")
 	var isolated_save := ProjectSettings.globalize_path("res://../target/godot-ui-%d/world3d.bin" % Time.get_ticks_usec())
 	OS.set_environment("CDDA_SAVE_PATH", isolated_save)
+	scene.bridge.set_identity_path(isolated_save + ".client.uuid")
 	scene._singleplayer()
 	for i in range(300):
 		scene._process(0.0)
