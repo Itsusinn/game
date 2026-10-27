@@ -37,7 +37,7 @@ impl VoxelWorld {
             anyhow::ensure!(item.quantity > 0 && hit.normal != [0; 3], "无法放置方块。");
             let position = std::array::from_fn(|i| hit.position[i] + hit.normal[i]);
             anyhow::ensure!(
-                Grid::index(position).is_some()
+                protocol::valid_voxel(position)
                     && position[1] > 0
                     && self.terrain.get(position) == AIR,
                 "放置位置被占用或超出世界边界。"
@@ -110,8 +110,7 @@ impl VoxelWorld {
         let p = self.players.get_mut(&id).unwrap();
         p.inventory = bag;
         p.edit_after = self.tick + 6;
-        self.dirty_chunks
-            .insert(position.map(|v| v / CHUNK_EDGE * CHUNK_EDGE));
+        self.dirty_chunks.insert(Grid::origin(position));
         Ok(())
     }
 
@@ -126,7 +125,16 @@ impl VoxelWorld {
             .collect();
         let mut slow = vec![];
         for (&id, p) in &self.players {
-            if messages.iter().any(|m| p.tx.try_send(m.clone()).is_err()) {
+            if messages
+                .iter()
+                .filter(|m| match m {
+                    ServerMessage::Chunk3d { origin, .. } => {
+                        p.sent_columns.contains(&[origin[0] / 16, origin[2] / 16])
+                    }
+                    _ => false,
+                })
+                .any(|m| p.tx.try_send(m.clone()).is_err())
+            {
                 slow.push(id);
             }
         }
@@ -150,6 +158,8 @@ mod tests {
         w.players.get_mut(&1).unwrap().body.position = [10.5, 1.0, 10.5];
         w.terrain.set([10, 2, 7], STONE);
         w.terrain.set([10, 2, 6], STONE);
+        w.stream_chunks();
+        while rx.try_recv().is_ok() {}
         (w, rx)
     }
     fn command(w: &VoxelWorld, place: bool) -> BlockEdit {
@@ -164,6 +174,33 @@ mod tests {
             slot: p.inventory.selected,
             inventory_revision: p.inventory.revision,
         }
+    }
+    #[test]
+    fn negative_coordinate_edits_use_euclidean_chunk_ownership() {
+        let (mut w, mut rx) = world();
+        super::super::terrain::ensure_column(&mut w.terrain, 1, [-1, 0]);
+        w.players.get_mut(&1).unwrap().body.position = [-10.5, 20.0, 10.5];
+        w.terrain.set([-11, 21, 7], STONE);
+        w.terrain.set([-11, 21, 6], STONE);
+        for _ in 0..13 {
+            w.stream_chunks();
+            while rx.try_recv().is_ok() {}
+        }
+        w.apply_block_edit(1, command(&w, false)).unwrap();
+        w.broadcast_terrain();
+        match rx.try_recv().unwrap() {
+            ServerMessage::Chunk3d { origin, blocks } => {
+                assert_eq!(origin, [-16, 16, 0]);
+                let mut map = Grid::unknown();
+                map.apply_chunk(origin, &blocks);
+                assert_eq!(map.get([-11, 21, 7]), AIR);
+            }
+            _ => panic!("expected negative section edit"),
+        }
+        w.tick += 6;
+        w.apply_block_edit(1, command(&w, true)).unwrap();
+        assert_eq!(w.terrain.get([-11, 21, 7]), STONE);
+        assert!(w.players[&1].inventory.is_empty());
     }
     #[test]
     fn break_place_conserve_inventory_broadcast_and_persist() {
@@ -319,7 +356,11 @@ mod tests {
         assert!(w.apply_block_edit(1, c).is_err());
         assert_eq!(w.terrain.get([10, 0, 10]), STONE);
         let (tx, _full) = mpsc::channel(32);
-        w.register_player(2, tx).unwrap(); // Initial map fills this peer's queue.
+        for seq in 0..32 {
+            tx.try_send(ServerMessage::Pong { seq }).unwrap();
+        }
+        w.register_player(2, tx).unwrap();
+        w.players.get_mut(&2).unwrap().sent_columns.insert([0, 0]);
         w.apply_block_edit(1, command(&w, false)).unwrap();
         w.broadcast_terrain();
         assert!(w.players.contains_key(&1));

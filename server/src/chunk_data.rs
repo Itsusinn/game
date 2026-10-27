@@ -16,7 +16,7 @@ use std::{
     path::Path,
 };
 
-pub const DATA_VERSION: u32 = 1;
+pub const DATA_VERSION: u32 = 2;
 const MAGIC: &[u8; 8] = b"DNGCHK01";
 const BLOCKS: usize = 4096;
 const IDS: [&str; 9] = [
@@ -188,75 +188,70 @@ impl ChunkArchive {
         tick: u64,
     ) -> Result<Self> {
         anyhow::ensure!(
-            terrain.blocks.len() == WORLD_SIZE.iter().product::<i32>() as usize,
+            terrain.columns().iter().all(|c| terrain.has_column(*c)),
             "invalid world grid length"
         );
         let mut chunks = Vec::new();
-        for z in 0..WORLD_SIZE[2] / CHUNK_EDGE {
-            for x in 0..WORLD_SIZE[0] / CHUNK_EDGE {
-                let mut sections = Vec::new();
-                for y in 0..WORLD_SIZE[1] / CHUNK_EDGE {
-                    sections.push(Section {
-                        y,
-                        block_states: BlockStates::capture(&terrain.chunk([
-                            x * 16,
-                            y * 16,
-                            z * 16,
-                        ]))?,
-                    });
-                }
-                chunks.push(Chunk {
-                    data_version: DATA_VERSION,
-                    x_pos: x,
-                    z_pos: z,
-                    y_pos: 0,
-                    status: "game:full".into(),
-                    last_update: tick,
-                    sections,
-                    block_entities: containers
-                        .values()
-                        .filter(|c| {
-                            c.position[0].div_euclid(16) == x && c.position[2].div_euclid(16) == z
-                        })
-                        .map(|c| BlockEntity {
-                            id: "game:chest".into(),
-                            position: c.position,
-                            revision: c.revision,
-                            items: c
-                                .items
-                                .iter()
-                                .enumerate()
-                                .map(|(slot, item)| ItemStack {
-                                    slot: slot as u8,
-                                    id: item.name.clone(),
-                                    count: item.quantity,
-                                })
-                                .collect(),
-                        })
-                        .collect(),
-                    entities: items
-                        .iter()
-                        .filter(|i| {
-                            (i.position[0] / 16.0).floor() as i32 == x
-                                && (i.position[2] / 16.0).floor() as i32 == z
-                        })
-                        .map(|i| ItemEntity {
-                            id: i.id,
-                            position: i.position,
-                            item: i.name.clone(),
-                        })
-                        .collect(),
+        for [x, z] in terrain.columns() {
+            let mut sections = Vec::new();
+            for y in 0..WORLD_SIZE[1] / CHUNK_EDGE {
+                sections.push(Section {
+                    y,
+                    block_states: BlockStates::capture(&terrain.chunk([x * 16, y * 16, z * 16]))?,
                 });
             }
+            chunks.push(Chunk {
+                data_version: DATA_VERSION,
+                x_pos: x,
+                z_pos: z,
+                y_pos: 0,
+                status: "game:full".into(),
+                last_update: tick,
+                sections,
+                block_entities: containers
+                    .values()
+                    .filter(|c| {
+                        c.position[0].div_euclid(16) == x && c.position[2].div_euclid(16) == z
+                    })
+                    .map(|c| BlockEntity {
+                        id: "game:chest".into(),
+                        position: c.position,
+                        revision: c.revision,
+                        items: c
+                            .items
+                            .iter()
+                            .enumerate()
+                            .map(|(slot, item)| ItemStack {
+                                slot: slot as u8,
+                                id: item.name.clone(),
+                                count: item.quantity,
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                entities: items
+                    .iter()
+                    .filter(|i| {
+                        (i.position[0] / 16.0).floor() as i32 == x
+                            && (i.position[2] / 16.0).floor() as i32 == z
+                    })
+                    .map(|i| ItemEntity {
+                        id: i.id,
+                        position: i.position,
+                        item: i.name.clone(),
+                    })
+                    .collect(),
+            });
         }
         anyhow::ensure!(
             chunks.iter().map(|c| c.block_entities.len()).sum::<usize>() == containers.len()
                 && chunks.iter().map(|c| c.entities.len()).sum::<usize>() == items.len(),
             "entities outside saved world"
         );
+        chunks.sort_by_key(|c| (c.z_pos, c.x_pos));
         let value = Self {
             data_version: DATA_VERSION,
-            size: WORLD_SIZE,
+            size: [0, protocol::WORLD_HEIGHT, 0],
             seed,
             generation,
             last_update: tick,
@@ -268,8 +263,13 @@ impl ChunkArchive {
 
     pub fn restore(&self) -> Result<RestoredChunks> {
         anyhow::ensure!(
-            self.data_version == DATA_VERSION
-                && self.size == WORLD_SIZE
+            matches!(self.data_version, 1 | DATA_VERSION)
+                && self.size
+                    == if self.data_version == 1 {
+                        WORLD_SIZE
+                    } else {
+                        [0, protocol::WORLD_HEIGHT, 0]
+                    }
                 && self.last_update <= i64::MAX as u64,
             "unsupported chunk archive metadata"
         );
@@ -280,22 +280,23 @@ impl ChunkArchive {
         let nx = WORLD_SIZE[0] / 16;
         let nz = WORLD_SIZE[2] / 16;
         anyhow::ensure!(
-            self.chunks.len() == (nx * nz) as usize,
+            self.data_version != 1 || self.chunks.len() == (nx * nz) as usize,
             "missing or excess chunk columns"
         );
-        let mut terrain = Grid::empty();
+        let mut terrain = Grid::unknown();
         let mut columns = HashSet::new();
         for chunk in &self.chunks {
             anyhow::ensure!(
-                chunk.data_version == DATA_VERSION
+                chunk.data_version == self.data_version
                     && chunk.status == "game:full"
                     && chunk.y_pos == 0
                     && chunk.last_update <= self.last_update,
                 "invalid chunk metadata"
             );
             anyhow::ensure!(
-                (0..nx).contains(&chunk.x_pos)
-                    && (0..nz).contains(&chunk.z_pos)
+                protocol::valid_column([chunk.x_pos, chunk.z_pos])
+                    && (self.data_version != 1
+                        || ((0..nx).contains(&chunk.x_pos) && (0..nz).contains(&chunk.z_pos)))
                     && columns.insert((chunk.x_pos, chunk.z_pos)),
                 "duplicate or invalid chunk position"
             );
@@ -374,11 +375,7 @@ impl ChunkArchive {
                     ids.insert(item.id)
                         && !item.item.is_empty()
                         && item.item.len() <= 128
-                        && item
-                            .position
-                            .iter()
-                            .zip(WORLD_SIZE)
-                            .all(|(v, n)| v.is_finite() && *v >= 0.0 && *v < n as f32)
+                        && protocol::valid_position(item.position)
                         && (item.position[0] / 16.0).floor() as i32 == chunk.x_pos
                         && (item.position[2] / 16.0).floor() as i32 == chunk.z_pos,
                     "invalid ground item entity"
@@ -391,7 +388,13 @@ impl ChunkArchive {
             }
         }
         anyhow::ensure!(
-            terrain.blocks.iter().filter(|b| **b == CHEST).count() == containers.len(),
+            terrain
+                .blocks
+                .values()
+                .flatten()
+                .filter(|b| **b == CHEST)
+                .count()
+                == containers.len(),
             "chest voxel/entity count mismatch"
         );
         anyhow::ensure!(items.len() <= 100_000, "too many world items");
@@ -508,7 +511,7 @@ mod tests {
         let path = dir.path().join("chunks.rkyv");
         write_new(&path, &archive).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        assert!(bytes.len() < restored.terrain.blocks.len());
+        assert!(bytes.len() < restored.terrain.blocks.len() * 4096);
         assert_eq!(read(&path).unwrap(), archive);
         assert!(write_new(&path, &archive).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
@@ -528,6 +531,11 @@ mod tests {
     fn invalid_or_missing_chunk_data_is_never_filled_with_air() {
         let original = sample();
         let mut bad = original.clone();
+        bad.data_version = 1;
+        bad.size = WORLD_SIZE;
+        for c in &mut bad.chunks {
+            c.data_version = 1;
+        }
         bad.chunks.pop();
         assert!(bad.restore().is_err());
         bad = original.clone();

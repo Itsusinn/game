@@ -80,6 +80,10 @@ godot-containers:
 godot-editing:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 editing
 
+# 真实 QUIC 探索后在图形窗口验证负坐标区块加载、卸载与保存
+godot-streaming:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 streaming
+
 # 导出 Windows 调试客户端
 export-debug:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 export-debug

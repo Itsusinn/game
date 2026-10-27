@@ -3,6 +3,7 @@ mod editing;
 mod inventory;
 mod persistence;
 pub use persistence::lock_world;
+mod streaming;
 mod terrain;
 use anyhow::{Context, Result};
 use game_simulation::{clear_line, distance, grid::Grid, overlaps, step_with_actors};
@@ -15,6 +16,7 @@ use std::{
 use tokio::sync::mpsc;
 
 struct Player {
+    sent_columns: BTreeSet<[i32; 2]>,
     uuid: Option<[u8; 16]>,
     name: String,
     body: Body,
@@ -116,16 +118,10 @@ impl VoxelWorld {
         let position = self
             .spawn_position(id)
             .context("no unoccupied spawn position")?;
-        for origin in Grid::origins() {
-            tx.try_send(ServerMessage::Chunk3d {
-                origin,
-                blocks: self.terrain.chunk(origin),
-            })
-            .context("initial map queue full")?;
-        }
         self.players.insert(
             id,
             Player {
+                sent_columns: BTreeSet::new(),
                 uuid: None,
                 name: String::new(),
                 body: Body {
@@ -220,6 +216,7 @@ impl VoxelWorld {
     }
     pub fn tick(&mut self) {
         self.tick += 1;
+        self.stream_chunks();
         self.broadcast_terrain();
         let mut actions = Vec::new();
         let mut occupants: Vec<_> = self
@@ -452,11 +449,17 @@ impl VoxelWorld {
         anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
         anyhow::ensure!(
-            matches!(saved.version, 1..=5) && saved.size == WORLD_SIZE,
+            matches!(saved.version, 1..=6)
+                && saved.size
+                    == if saved.version == 6 {
+                        [0, WORLD_HEIGHT, 0]
+                    } else {
+                        WORLD_SIZE
+                    },
             "unsupported 3D save version/dimensions"
         );
         anyhow::ensure!(
-            saved.version == 5 || saved.entity_archive.is_none(),
+            saved.version >= 5 || saved.entity_archive.is_none(),
             "unexpected entity reference in legacy world"
         );
         if saved.version >= 4 {
@@ -482,19 +485,35 @@ impl VoxelWorld {
                 archive.generation == generation && archive.seed == saved.seed,
                 "chunk checkpoint identity mismatch"
             );
+            anyhow::ensure!(
+                archive.data_version == if saved.version == 6 { 2 } else { 1 },
+                "world/chunk version mismatch"
+            );
             let decoded = archive.restore()?;
+            if saved.version == 6 {
+                let columns = saved
+                    .generated_columns
+                    .context("missing generated column manifest")?;
+                anyhow::ensure!(
+                    columns.len() == decoded.terrain.columns().len()
+                        && columns.into_iter().collect::<BTreeSet<_>>()
+                            == decoded.terrain.columns(),
+                    "missing or unexpected generated columns"
+                );
+            }
             let mut world = Self::with_map(saved.seed, decoded.terrain);
             world.restore_containers(decoded.containers)?;
             world.load_player_checkpoint(path, generation.clone(), decoded.items)?;
             world.tick = archive.last_update;
-            if saved.version == 5 {
+            if saved.version >= 5 {
                 anyhow::ensure!(
                     saved.entity_archive.as_ref() == Some(&generation),
                     "entity checkpoint mismatch"
                 );
                 world.load_entity_checkpoint(path, &generation)?;
-            } else {
-                containers::backup_version(path, &bytes, 4)?;
+            }
+            if saved.version < 6 {
+                containers::backup_version(path, &bytes, saved.version)?;
             }
             return Ok(world);
         }
@@ -510,12 +529,7 @@ impl VoxelWorld {
                     .all(|b| *b <= if saved.version == 1 { PLANK } else { CHEST }),
             "invalid voxel data"
         );
-        let mut world = Self::with_map(
-            saved.seed,
-            Grid {
-                blocks: saved.blocks,
-            },
-        );
+        let mut world = Self::with_map(saved.seed, Grid::from_legacy(&saved.blocks));
         if saved.version == 1 {
             anyhow::ensure!(
                 saved.containers.is_empty(),
@@ -562,8 +576,9 @@ impl VoxelWorld {
         crate::chunk_data::write_new(&folder.join(format!("{player_archive}.rkyv")), &chunks)?;
         self.write_entity_checkpoint(path, &player_archive)?;
         let saved = Save {
-            version: 5,
-            size: WORLD_SIZE,
+            version: 6,
+            size: [0, WORLD_HEIGHT, 0],
+            generated_columns: Some(self.terrain.columns().into_iter().collect()),
             seed: self.world_seed,
             blocks: vec![],
             containers: vec![],
@@ -603,6 +618,8 @@ struct Save {
     chunk_archive: Option<String>,
     #[serde(default)]
     entity_archive: Option<String>,
+    #[serde(default)]
+    generated_columns: Option<Vec<[i32; 2]>>,
 }
 
 #[cfg(test)]
@@ -735,6 +752,9 @@ mod tests {
     fn slow_clients_are_removed_without_blocking_the_tick() {
         let mut w = VoxelWorld::new(1);
         let (tx, _rx) = mpsc::channel(32);
+        for seq in 0..32 {
+            tx.try_send(ServerMessage::Pong { seq }).unwrap();
+        }
         w.register_player(1, tx).unwrap();
         w.tick();
         assert_eq!(w.player_count(), 0);

@@ -45,8 +45,30 @@ impl Default for Client3d {
     }
 }
 impl Client3d {
+    fn dirty_section(&mut self, origin: [i32; 3]) {
+        self.dirty_chunks.insert(origin);
+        for axis in 0..3 {
+            for step in [-CHUNK_EDGE, CHUNK_EDGE] {
+                let mut adjacent = origin;
+                adjacent[axis] += step;
+                if protocol::valid_voxel(adjacent) {
+                    self.dirty_chunks.insert(adjacent);
+                }
+            }
+        }
+    }
     pub fn apply(&mut self, message: ServerMessage) {
         match message {
+            ServerMessage::UnloadColumn { column } => {
+                if !valid_column(column) {
+                    return;
+                }
+                self.terrain.unload_column(column);
+                self.revision += 1;
+                for y in [0, 16] {
+                    self.dirty_section([column[0] * 16, y, column[1] * 16]);
+                }
+            }
             ServerMessage::Welcome3d {
                 player_id,
                 rotation,
@@ -59,17 +81,7 @@ impl Client3d {
             ServerMessage::Chunk3d { origin, blocks } => {
                 if self.terrain.apply_chunk(origin, &blocks) {
                     self.revision += 1;
-                    self.dirty_chunks.insert(origin);
-                    // Adjacent meshes share boundary face visibility.
-                    for axis in 0..3 {
-                        for step in [-CHUNK_EDGE, CHUNK_EDGE] {
-                            let mut adjacent = origin;
-                            adjacent[axis] += step;
-                            if Grid::index(adjacent).is_some() {
-                                self.dirty_chunks.insert(adjacent);
-                            }
-                        }
-                    }
+                    self.dirty_section(origin);
                 }
             }
             ServerMessage::World3d(s) => {
@@ -88,7 +100,8 @@ impl Client3d {
                 self.log = s.log;
                 self.container = s.container;
                 self.container_error = s.container_error;
-                self.ready = self.player_id != 0 && !self.terrain.blocks.contains(&255);
+                self.ready = self.player_id != 0
+                    && (self.ready || self.terrain.nearby_known(s.body.position));
                 let obstacles: Vec<_> = self
                     .actors
                     .iter()
@@ -183,11 +196,33 @@ mod tests {
         let mut m = Client3d::default();
         let revision = m.revision;
         m.apply(ServerMessage::Chunk3d {
-            origin: [-16, 0, 0],
+            origin: [-15, 0, 0],
             blocks: vec![AIR; 4096],
         });
         assert_eq!(m.revision, revision);
         assert!(m.terrain.solid([10, 10, 10]));
+        assert!(!m.ready);
+    }
+
+    #[test]
+    fn unload_removes_collision_data_and_meshes_and_new_session_discards_cache() {
+        let mut m = model();
+        m.apply(ServerMessage::Chunk3d {
+            origin: [-16, 0, 0],
+            blocks: vec![AIR; 4096],
+        });
+        assert!(!m.terrain.solid([-1, 1, 1]));
+        m.dirty_chunks.clear();
+        m.apply(ServerMessage::UnloadColumn { column: [-1, 0] });
+        assert!(m.terrain.solid([-1, 1, 1]));
+        assert!(m.dirty_chunks.contains(&[-16, 0, 0]));
+        assert!(m.dirty_chunks.contains(&[0, 0, 0]));
+        m.apply(ServerMessage::Welcome3d {
+            player_id: 7,
+            seed: 1,
+            rotation: [0.0, 0.0],
+        });
+        assert!(m.terrain.blocks.is_empty());
         assert!(!m.ready);
     }
 
@@ -204,7 +239,14 @@ mod tests {
         assert!(!m.terrain.solid([15, 2, 8]));
         assert_eq!(
             m.dirty_chunks,
-            BTreeSet::from([[0, 0, 0], [16, 0, 0], [0, 16, 0], [0, 0, 16]])
+            BTreeSet::from([
+                [0, 0, 0],
+                [-16, 0, 0],
+                [0, 0, -16],
+                [16, 0, 0],
+                [0, 16, 0],
+                [0, 0, 16]
+            ])
         );
         assert!(!m.dirty_chunks.contains(&[48, 0, 48]));
     }

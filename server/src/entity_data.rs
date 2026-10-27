@@ -6,7 +6,7 @@ use protocol::{Actor3d, Body, CHUNK_EDGE, WORLD_SIZE};
 use rkyv::{rancor::Error, Archive, Deserialize, Serialize};
 use std::{collections::HashSet, path::Path};
 
-pub const DATA_VERSION: u32 = 1;
+pub const DATA_VERSION: u32 = 2;
 const MAGIC: &[u8; 8] = b"DNGENT01";
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -49,10 +49,7 @@ impl EntityData {
         anyhow::ensure!(self.uuid != [0; 16], "nil entity UUID");
         anyhow::ensure!(self.network_id >= 1 << 31, "invalid NPC network ID");
         anyhow::ensure!(
-            self.pos.iter().zip(WORLD_SIZE).all(|(&v, n)| v.is_finite()
-                && v >= 0.0
-                && v < f64::from(n)
-                && (v as f32) < n as f32),
+            protocol::valid_position(self.pos.map(|v| v as f32)),
             "invalid entity Pos"
         );
         anyhow::ensure!(
@@ -118,28 +115,41 @@ pub struct EntityArchive {
 
 impl EntityArchive {
     pub fn capture(
+        entities: Vec<EntityData>,
+        seed: u64,
+        generation: String,
+        tick: u64,
+    ) -> Result<Self> {
+        let columns = (0..4)
+            .flat_map(|z| (0..4).map(move |x| [x, z]))
+            .chain(entities.iter().map(|e| e.chunk()))
+            .collect();
+        Self::capture_columns(entities, seed, generation, tick, columns)
+    }
+
+    pub fn capture_columns(
         mut entities: Vec<EntityData>,
         seed: u64,
         generation: String,
         tick: u64,
+        columns: std::collections::BTreeSet<[i32; 2]>,
     ) -> Result<Self> {
         for entity in &entities {
             entity.validate(tick)?;
         }
         entities.sort_by_key(|e| e.network_id);
         let mut chunks = Vec::new();
-        for z in 0..WORLD_SIZE[2] / CHUNK_EDGE {
-            for x in 0..WORLD_SIZE[0] / CHUNK_EDGE {
-                chunks.push(EntityChunk {
-                    position: [x, z],
-                    entities: entities
-                        .iter()
-                        .filter(|e| e.chunk() == [x, z])
-                        .cloned()
-                        .collect(),
-                });
-            }
+        for [x, z] in columns {
+            chunks.push(EntityChunk {
+                position: [x, z],
+                entities: entities
+                    .iter()
+                    .filter(|e| e.chunk() == [x, z])
+                    .cloned()
+                    .collect(),
+            });
         }
+        chunks.sort_by_key(|c| (c.position[1], c.position[0]));
         let archive = Self {
             data_version: DATA_VERSION,
             dimension: crate::player_data::DIMENSION.into(),
@@ -148,13 +158,22 @@ impl EntityArchive {
             last_update: tick,
             chunks,
         };
+        anyhow::ensure!(
+            archive
+                .chunks
+                .iter()
+                .map(|c| c.entities.len())
+                .sum::<usize>()
+                == entities.len(),
+            "entity outside generated columns"
+        );
         archive.validate()?;
         Ok(archive)
     }
 
     pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(
-            self.data_version == DATA_VERSION
+            matches!(self.data_version, 1 | DATA_VERSION)
                 && self.dimension == crate::player_data::DIMENSION
                 && self.last_update <= i64::MAX as u64,
             "unsupported entity archive metadata"
@@ -166,7 +185,7 @@ impl EntityArchive {
         let nx = WORLD_SIZE[0] / CHUNK_EDGE;
         let nz = WORLD_SIZE[2] / CHUNK_EDGE;
         anyhow::ensure!(
-            self.chunks.len() == (nx * nz) as usize,
+            self.data_version != 1 || self.chunks.len() == (nx * nz) as usize,
             "missing entity chunks"
         );
         anyhow::ensure!(
@@ -179,7 +198,9 @@ impl EntityArchive {
         for chunk in &self.chunks {
             let [x, z] = chunk.position;
             anyhow::ensure!(
-                (0..nx).contains(&x) && (0..nz).contains(&z) && chunks.insert(chunk.position),
+                protocol::valid_column([x, z])
+                    && (self.data_version != 1 || ((0..nx).contains(&x) && (0..nz).contains(&z)))
+                    && chunks.insert(chunk.position),
                 "invalid/duplicate entity chunk"
             );
             for entity in &chunk.entities {
@@ -271,7 +292,7 @@ mod tests {
             |e| e.network_id = 1,
             |e| e.pos[0] = f64::NAN,
             |e| e.pos[1] = -1.0,
-            |e| e.pos[2] = 64.0,
+            |e| e.pos[2] = f64::from(protocol::WORLD_LIMIT),
             |e| e.motion[0] = f64::INFINITY,
             |e| e.motion[1] = 101.0,
             |e| e.rotation[0] = f32::NAN,
@@ -302,6 +323,7 @@ mod tests {
             assert!(archive.validate().is_err());
         }
         let mut archive = original.clone();
+        archive.data_version = 1;
         archive.chunks.pop();
         assert!(
             archive.validate().is_err(),

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing')]
+    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing','streaming')]
     [string]$Action = 'run',
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$GameArgs
@@ -40,6 +40,16 @@ function Build-Extension([bool]$Release) {
 
 Build-Extension $false
 if ($Action -eq 'build') { exit 0 }
+if ($Action -eq 'streaming') {
+    $fixtureOutput = & cargo test -p client --test multiplayer --jobs 2 exploration_streams_generated_columns_unloads_and_reconnects_at_negative_position -- --nocapture
+    $fixtureOutput | Write-Output
+    if ($LASTEXITCODE -ne 0) { throw 'Streaming QUIC fixture failed.' }
+    $fixtureLine = $fixtureOutput | Where-Object { $_ -like 'STREAMING_TEST_SAVE=*' } | Select-Object -Last 1
+    if (-not $fixtureLine) { throw 'Streaming test did not provide its isolated save path.' }
+    $env:CDDA_SAVE_PATH = $fixtureLine.Substring('STREAMING_TEST_SAVE='.Length)
+    & $godotExe --path godot --script res://tests/streaming.gd
+    exit $LASTEXITCODE
+}
 if ($Action -eq 'containers') {
     & $godotExe --headless --path godot --script res://tests/containers.gd
     exit $LASTEXITCODE

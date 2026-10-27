@@ -298,6 +298,7 @@ impl GameBridge {
             "shutdown_pending" => self.session.shutdown_pending(),
             "connected" => self.session.transport.is_some(), "status" => self.session.status.as_str(),
             "generation" => self.session.generation as i64, "revision" => m.revision as i64,
+            "loaded_sections" => m.terrain.blocks.len() as i64,
             "position" => vector(self.movement.position()), "body_position" => vector(m.body.position),
             "grounded" => m.body.grounded, "hp" => m.hp, "player_id" => i64::from(m.player_id),
             "pending" => m.pending.len() as i64,
@@ -312,10 +313,9 @@ impl GameBridge {
     #[func]
     fn chunk_geometry(&self, origin: Vector3i) -> VarDictionary {
         let origin = [origin.x, origin.y, origin.z];
-        if origin
-            .iter()
-            .zip(protocol::WORLD_SIZE)
-            .any(|(&v, n)| v < 0 || v >= n || v % 16 != 0)
+        if !protocol::valid_voxel(origin)
+            || origin.iter().any(|v| v.rem_euclid(16) != 0)
+            || !self.session.model.terrain.blocks.contains_key(&origin)
         {
             return VarDictionary::new();
         }

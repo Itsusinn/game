@@ -1,6 +1,25 @@
 use protocol::{ClientMessage, ServerMessage};
 
 #[test]
+fn streaming_messages_preserve_signed_coordinates() {
+    for m in [
+        ServerMessage::UnloadColumn {
+            column: [-2048, 2047],
+        },
+        ServerMessage::Chunk3d {
+            origin: [-16, 16, -32],
+            blocks: vec![protocol::AIR; 4096],
+        },
+    ] {
+        assert_eq!(
+            rmp_serde::from_slice::<ServerMessage>(&rmp_serde::to_vec(&m).unwrap()).unwrap(),
+            m
+        );
+    }
+    assert_eq!(protocol::column_at([-0.1, 7.0, -16.1]), [-1, -2]);
+}
+
+#[test]
 fn block_edits_and_item_mapping_roundtrip() {
     use protocol::*;
     for place in [false, true] {

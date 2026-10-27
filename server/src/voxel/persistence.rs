@@ -29,11 +29,12 @@ impl VoxelWorld {
                 )
             })
             .collect::<Result<Vec<_>>>()?;
-        crate::entity_data::EntityArchive::capture(
+        crate::entity_data::EntityArchive::capture_columns(
             entities,
             self.world_seed,
             generation.into(),
             self.tick,
+            self.terrain.columns(),
         )
     }
 
@@ -55,6 +56,15 @@ impl VoxelWorld {
                 && archive.seed == self.world_seed
                 && archive.last_update == self.tick,
             "entity checkpoint identity mismatch"
+        );
+        anyhow::ensure!(
+            archive
+                .chunks
+                .iter()
+                .map(|c| c.position)
+                .collect::<BTreeSet<_>>()
+                == self.terrain.columns(),
+            "entity/terrain column mismatch"
         );
         let mut npcs = hecs::World::new();
         for entity in archive.chunks.into_iter().flat_map(|c| c.entities) {
@@ -118,10 +128,7 @@ impl VoxelWorld {
     }
 
     fn position_available(&self, position: [f32; 3], exclude: u32) -> bool {
-        position
-            .iter()
-            .zip(WORLD_SIZE)
-            .all(|(v, n)| v.is_finite() && *v >= 0.0 && *v < n as f32)
+        valid_position(position)
             && !overlaps(position, &|p| self.terrain.solid(p))
             && self
                 .players
@@ -191,11 +198,7 @@ impl VoxelWorld {
                 ids.insert(item.id)
                     && !item.name.is_empty()
                     && item.name.len() <= 128
-                    && item
-                        .position
-                        .iter()
-                        .zip(WORLD_SIZE)
-                        .all(|(v, n)| v.is_finite() && *v >= 0.0 && *v < n as f32),
+                    && valid_position(item.position),
                 "invalid saved ground item"
             );
         }
@@ -227,6 +230,102 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/player-world-tests");
         std::fs::create_dir_all(&root).unwrap();
         tempfile::tempdir_in(root).unwrap()
+    }
+
+    #[test]
+    fn signed_generated_columns_roundtrip_and_missing_column_is_not_regenerated() {
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        let mut w = VoxelWorld::new(17);
+        terrain::ensure_column(&mut w.terrain, 17, [-3, 7]);
+        w.terrain.set([-40, 20, 115], PLANK);
+        w.items.push(GroundItem3d {
+            id: 70,
+            position: [-40.5, 21.0, 115.5],
+            name: "石块".into(),
+        });
+        w.save(&path).unwrap();
+        let restored = VoxelWorld::load(&path).unwrap();
+        assert_eq!(restored.terrain, w.terrain);
+        assert_eq!(restored.items, w.items);
+        assert!(!restored.terrain.has_column([-4, 7]));
+        let bytes = std::fs::read(&path).unwrap();
+        let saved: Save = rmp_serde::from_slice(&bytes[8..]).unwrap();
+        let archive_path = path
+            .with_extension("chunks")
+            .join(format!("{}.rkyv", saved.chunk_archive.unwrap()));
+        let mut archive = crate::chunk_data::read(&archive_path).unwrap();
+        archive.chunks.retain(|c| c.x_pos != -3 || c.z_pos != 7);
+        std::fs::remove_file(&archive_path).unwrap();
+        crate::chunk_data::write_new(&archive_path, &archive).unwrap();
+        assert!(VoxelWorld::load(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn v5_migration_preserves_old_area_players_and_dead_monsters() {
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        let mut w = VoxelWorld::new(17);
+        w.npcs.clear();
+        register(&mut w, 1, [8; 16], "Old explorer");
+        w.players.get_mut(&1).unwrap().hp = 63;
+        w.save(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let mut saved: Save = rmp_serde::from_slice(&bytes[8..]).unwrap();
+        saved.version = 5;
+        saved.size = WORLD_SIZE;
+        saved.generated_columns = None;
+        let generation = saved.chunk_archive.as_ref().unwrap();
+        let cp = path
+            .with_extension("chunks")
+            .join(format!("{generation}.rkyv"));
+        let ep = path
+            .with_extension("entities")
+            .join(format!("{generation}.rkyv"));
+        let mut chunks = crate::chunk_data::read(&cp).unwrap();
+        chunks.data_version = 1;
+        chunks.size = WORLD_SIZE;
+        for c in &mut chunks.chunks {
+            c.data_version = 1;
+        }
+        let mut entities = crate::entity_data::read(&ep).unwrap();
+        entities.data_version = 1;
+        std::fs::remove_file(&cp).unwrap();
+        std::fs::remove_file(&ep).unwrap();
+        crate::chunk_data::write_new(&cp, &chunks).unwrap();
+        crate::entity_data::write_new(&ep, &entities).unwrap();
+        let mut original = b"DNG3D001".to_vec();
+        original.extend(
+            rmp_serde::to_vec(&(
+                saved.version,
+                saved.size,
+                saved.seed,
+                saved.blocks,
+                saved.containers,
+                saved.player_archive,
+                saved.items,
+                saved.chunk_archive,
+                saved.entity_archive,
+            ))
+            .unwrap(),
+        );
+        std::fs::write(&path, &original).unwrap();
+        let mut migrated = VoxelWorld::load(&path).unwrap();
+        assert_eq!(
+            std::fs::read(path.with_extension("v5.bak")).unwrap(),
+            original
+        );
+        assert!(migrated.npcs.is_empty());
+        assert_eq!(migrated.terrain, w.terrain);
+        assert_eq!(migrated.saved_players[&[8; 16]].health, 63.0);
+        terrain::ensure_column(&mut migrated.terrain, 17, [-1, 0]);
+        migrated.save(&path).unwrap();
+        let restored = VoxelWorld::load(&path).unwrap();
+        assert!(restored.terrain.has_column([-1, 0]));
+        assert_eq!(restored.terrain.legacy_blocks(), w.terrain.legacy_blocks());
+        assert!(cp.exists() && ep.exists());
+        assert!(restored.npcs.is_empty());
     }
     fn register(w: &mut VoxelWorld, id: u32, uuid: [u8; 16], name: &str) {
         let (tx, _rx) = mpsc::channel(64);
@@ -327,7 +426,7 @@ mod tests {
         original.extend(
             rmp_serde::to_vec(&(
                 4u32,
-                save.size,
+                WORLD_SIZE,
                 save.seed,
                 save.blocks,
                 save.containers,
@@ -344,6 +443,14 @@ mod tests {
         let player_path = path
             .with_extension("players")
             .join(format!("{generation}.rkyv"));
+        let mut old = crate::chunk_data::read(&chunk_path).unwrap();
+        old.data_version = 1;
+        old.size = WORLD_SIZE;
+        for c in &mut old.chunks {
+            c.data_version = 1;
+        }
+        std::fs::remove_file(&chunk_path).unwrap();
+        crate::chunk_data::write_new(&chunk_path, &old).unwrap();
         let chunks = std::fs::read(&chunk_path).unwrap();
         let players = std::fs::read(&player_path).unwrap();
         let loaded = VoxelWorld::load(&path).unwrap();
@@ -562,7 +669,7 @@ mod tests {
                 2u32,
                 WORLD_SIZE,
                 1u64,
-                &w.terrain.blocks,
+                &w.terrain.legacy_blocks(),
                 w.containers.values().collect::<Vec<_>>(),
             ))
             .unwrap(),
@@ -615,7 +722,7 @@ mod tests {
                 3u32,
                 WORLD_SIZE,
                 w.world_seed,
-                &w.terrain.blocks,
+                &w.terrain.legacy_blocks(),
                 w.containers.values().collect::<Vec<_>>(),
                 Some(generation),
                 Some(&w.items),
@@ -636,7 +743,7 @@ mod tests {
         loaded.save(&path).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let save: Save = rmp_serde::from_slice(&bytes[8..]).unwrap();
-        assert_eq!(save.version, 5);
+        assert_eq!(save.version, 6);
         assert!(save.blocks.is_empty() && save.containers.is_empty() && save.items.is_none());
         assert_eq!(save.player_archive, save.chunk_archive);
         let restored = VoxelWorld::load(&path).unwrap();

@@ -38,6 +38,7 @@ func run() -> void:
 		quit(1)
 		return
 	scene._focus_gained()
+	check(await settle(func(): return scene.state.loaded_sections == 98),"initial streaming window settles before mesh reuse check")
 	# Mine a neighboring ground cell so placement cannot overlap the player.
 	var feet: Vector3 = scene.state.body_position
 	var target := Vector3(floorf(feet.x)+1.5, roundf(feet.y)-0.5, floorf(feet.z)+0.5)

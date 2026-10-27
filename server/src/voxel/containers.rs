@@ -3,19 +3,21 @@ use std::io::Write;
 
 pub(super) fn empty_containers(map: &Grid) -> BTreeMap<[i32; 3], ContainerSnapshot> {
     let mut result = BTreeMap::new();
-    for y in 0..WORLD_SIZE[1] {
-        for z in 0..WORLD_SIZE[2] {
-            for x in 0..WORLD_SIZE[0] {
-                let position = [x, y, z];
-                if map.get(position) == CHEST {
-                    result.insert(
-                        position,
-                        ContainerSnapshot {
+    for origin in map.blocks.keys() {
+        for y in origin[1]..origin[1] + 16 {
+            for z in origin[2]..origin[2] + 16 {
+                for x in origin[0]..origin[0] + 16 {
+                    let position = [x, y, z];
+                    if map.get(position) == CHEST {
+                        result.insert(
                             position,
-                            revision: 0,
-                            items: vec![],
-                        },
-                    );
+                            ContainerSnapshot {
+                                position,
+                                revision: 0,
+                                items: vec![],
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -461,7 +463,9 @@ mod tests {
         let mut terrain = terrain::generate(7);
         terrain.set(CHEST_POS, STONE); // Occupied preferred position must be preserved.
         let mut bytes = b"DNG3D001".to_vec();
-        bytes.extend(rmp_serde::to_vec(&(1u32, WORLD_SIZE, 7u64, &terrain.blocks)).unwrap());
+        bytes.extend(
+            rmp_serde::to_vec(&(1u32, WORLD_SIZE, 7u64, &terrain.legacy_blocks())).unwrap(),
+        );
         std::fs::write(&path, &bytes).unwrap();
         let mut w = VoxelWorld::load(&path).unwrap();
         assert_eq!(std::fs::read(path.with_extension("v1.bak")).unwrap(), bytes);
@@ -473,8 +477,12 @@ mod tests {
         assert_eq!(w.terrain.get(CHEST_POS), STONE);
         assert_eq!(w.containers.len(), 1);
         let pos = *w.containers.keys().next().unwrap();
-        for (old, new) in terrain.blocks.iter().zip(&w.terrain.blocks) {
-            assert!(old == new || (*old == AIR && *new == CHEST));
+        for (old, new) in terrain
+            .legacy_blocks()
+            .iter()
+            .zip(w.terrain.legacy_blocks())
+        {
+            assert!(*old == new || (*old == AIR && new == CHEST));
         }
         w.containers
             .get_mut(&pos)
@@ -500,12 +508,13 @@ mod tests {
             version: 2,
             size: WORLD_SIZE,
             seed: 7,
-            blocks: w.terrain.blocks.clone(),
+            blocks: w.terrain.legacy_blocks(),
             containers: vec![],
             player_archive: None,
             items: None,
             chunk_archive: None,
             entity_archive: None,
+            generated_columns: None,
         };
         let mut bytes = b"DNG3D001".to_vec();
         bytes.extend(rmp_serde::to_vec(&saved).unwrap());

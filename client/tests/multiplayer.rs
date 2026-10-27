@@ -9,6 +9,135 @@ use server::{
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{oneshot, Mutex};
 
+#[tokio::test]
+async fn exploration_streams_generated_columns_unloads_and_reconnects_at_negative_position() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let mut world = VoxelWorld::new(12345);
+        // An isolated flat runway removes randomized trees/combat from this movement test.
+        for x in (-64..112).step_by(16) {
+            for z in (16..48).step_by(16) {
+                for y in [0, 16] {
+                    let mut blocks = vec![AIR; 4096];
+                    if y == 0 {
+                        for by in 0..=6 {
+                            for bz in 0..16 {
+                                for bx in 0..16 {
+                                    blocks[bx + 16 * (bz + 16 * by)] = STONE;
+                                }
+                            }
+                        }
+                    }
+                    world.terrain.apply_chunk([x, y, z], &blocks);
+                }
+            }
+        }
+        // Preserve the existing chest block/container pair outside the runway lane.
+        world.terrain.set([26, 7, 30], CHEST);
+        let initial_columns = world.terrain.columns().len();
+        let manager = Arc::new(Mutex::new(world));
+        let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = endpoint.local_addr().unwrap();
+        let (stop, stopped) = oneshot::channel();
+        let server_manager = manager.clone();
+        let server = tokio::spawn(serve_endpoint(endpoint, server_manager, async {
+            let _ = stopped.await;
+        }));
+        // Accelerate wall time only; every authority step still uses the shared 1/30 dt.
+        let tick_manager = manager.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                tick_manager.lock().await.tick();
+            }
+        });
+        let uuid = [91; 16];
+        let (_e, c) = connect_endpoint(address, cert.clone()).await.unwrap();
+        let (mut send, mut recv) = c.open_bi().await.unwrap();
+        let id = login_uuid(&mut send, &mut recv, "Explorer", uuid).await;
+        let mut model = game_client_core::voxel::Client3d::default();
+        model.apply(ServerMessage::Welcome3d {
+            player_id: id,
+            seed: 12345,
+            rotation: [0.0, 0.0],
+        });
+        let mut unloaded = 0;
+        let mut seq = 0;
+        let mut east = false;
+        let final_body = loop {
+            let message = read_message(&mut recv).await.unwrap();
+            let snapshot = if let ServerMessage::World3d(s) = &message {
+                Some(s.clone())
+            } else {
+                None
+            };
+            if matches!(message, ServerMessage::UnloadColumn { .. }) {
+                unloaded += 1;
+            }
+            model.apply(message);
+            assert!(model.terrain.columns().len() <= 49);
+            if let Some(s) = snapshot {
+                if !model.ready || s.seq < seq {
+                    continue;
+                }
+                if s.body.position[0] > 80.0 {
+                    east = true;
+                }
+                if east && s.body.position[0] < -35.0 {
+                    break s.body;
+                }
+                seq += 1;
+                write_message(
+                    &mut send,
+                    &ClientMessage::Input3d {
+                        seq,
+                        input: PlayerInput {
+                            strafe: if east { -1.0 } else { 1.0 },
+                            ..Default::default()
+                        },
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        };
+        assert!(unloaded > 0);
+        assert!(manager.lock().await.terrain.columns().len() > initial_columns);
+        assert!(model.terrain.has_column([-3, 2]));
+        assert!(!model.terrain.has_column([5, 2]));
+        c.close(0u32.into(), b"reconnect");
+        while manager.lock().await.player_count() != 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        ticker.abort();
+        let _ = ticker.await;
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/streaming-quic");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(format!("{}.bin", uuid::Uuid::new_v4()));
+        manager.lock().await.save(&path).unwrap();
+        *manager.lock().await = VoxelWorld::load(&path).unwrap();
+        let (_e2, c2) = connect_endpoint(address, cert).await.unwrap();
+        let (mut send2, mut recv2) = c2.open_bi().await.unwrap();
+        let id2 = login_uuid(&mut send2, &mut recv2, "Explorer renamed", uuid).await;
+        model.apply(ServerMessage::Welcome3d {
+            player_id: id2,
+            seed: 12345,
+            rotation: [0.0, 0.0],
+        });
+        while !model.ready {
+            model.apply(read_message(&mut recv2).await.unwrap());
+        }
+        assert!((model.body.position[0] - final_body.position[0]).abs() < 0.1);
+        assert!(model.terrain.has_column([-3, 2]));
+        c2.close(0u32.into(), b"done");
+        let _ = stop.send(());
+        server.await.unwrap().unwrap();
+        println!("STREAMING_TEST_SAVE={}", path.display());
+    })
+    .await
+    .expect("streaming QUIC exploration timed out");
+}
+
 async fn snapshot(recv: &mut quinn::RecvStream, seq: u32) -> Snapshot3d {
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
@@ -460,12 +589,12 @@ async fn two_clients_receive_voxels_move_jump_chat_and_disconnect_over_verified_
                     assert!(map.apply_chunk(origin, &blocks));
                     chunks += 1;
                 }
-                ServerMessage::World3d(s) => break s,
+                ServerMessage::World3d(s) if map.nearby_known(s.body.position) => break s,
                 _ => {}
             }
         };
-        assert_eq!(chunks, 32);
-        assert!(!map.blocks.contains(&255));
+        assert!((18..=98).contains(&chunks));
+        assert!(map.nearby_known(initial.body.position));
         assert!(map.solid([28, 6, 32]));
         let (_e2, c2) = connect_endpoint(address, cert).await.unwrap();
         let (mut s2, mut r2) = c2.open_bi().await.unwrap();

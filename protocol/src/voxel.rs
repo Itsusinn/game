@@ -1,7 +1,27 @@
 use serde::{Deserialize, Serialize};
 
 pub const CHUNK_EDGE: i32 = 16;
+/// Legacy spawn area's dimensions; not the streaming world's horizontal bounds.
 pub const WORLD_SIZE: [i32; 3] = [64, 32, 64];
+pub const WORLD_HEIGHT: i32 = 32;
+/// Conservative f32 physics/rendering precision limit.
+pub const WORLD_LIMIT: i32 = 32_768;
+pub const VIEW_RADIUS: i32 = 3;
+pub fn valid_voxel(p: [i32; 3]) -> bool {
+    (-WORLD_LIMIT..WORLD_LIMIT).contains(&p[0])
+        && (0..WORLD_HEIGHT).contains(&p[1])
+        && (-WORLD_LIMIT..WORLD_LIMIT).contains(&p[2])
+}
+pub fn valid_position(p: [f32; 3]) -> bool {
+    p.iter().all(|v| v.is_finite()) && valid_voxel(p.map(|v| v.floor() as i32))
+}
+pub fn column_at(p: [f32; 3]) -> [i32; 2] {
+    [p[0], p[2]].map(|v| (v / CHUNK_EDGE as f32).floor() as i32)
+}
+pub fn valid_column(c: [i32; 2]) -> bool {
+    c.iter()
+        .all(|v| (-WORLD_LIMIT / CHUNK_EDGE..WORLD_LIMIT / CHUNK_EDGE).contains(v))
+}
 pub const AIR: u8 = 0;
 pub const GRASS: u8 = 1;
 pub const DIRT: u8 = 2;

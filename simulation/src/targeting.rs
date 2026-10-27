@@ -24,7 +24,9 @@ pub fn target_block(map: &Grid, feet: [f32; 3], yaw: f32, pitch: f32) -> Option<
         -yaw.cos() * pitch.cos(),
     ];
     let mut cell = eye.map(|v| v.floor() as i32);
-    Grid::index(cell)?;
+    if !protocol::valid_voxel(cell) {
+        return None;
+    }
     let step = direction.map(|d| if d >= 0.0 { 1 } else { -1 });
     let delta = direction.map(|d| {
         if d.abs() < 1e-6 {
