@@ -505,6 +505,7 @@ mod tests {
             player_archive: None,
             items: None,
             chunk_archive: None,
+            entity_archive: None,
         };
         let mut bytes = b"DNG3D001".to_vec();
         bytes.extend(rmp_serde::to_vec(&saved).unwrap());

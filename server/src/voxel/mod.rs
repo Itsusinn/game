@@ -32,6 +32,7 @@ struct Player {
     container_error: String,
 }
 struct Npc {
+    uuid: [u8; 16],
     actor: Actor3d,
     body: Body,
     attack_tick: u64,
@@ -63,6 +64,7 @@ impl VoxelWorld {
             .enumerate()
         {
             npcs.spawn((Npc {
+                uuid: *uuid::Uuid::new_v4().as_bytes(),
                 actor: Actor3d {
                     id: (1 << 31) + i as u32,
                     kind: 1,
@@ -450,10 +452,14 @@ impl VoxelWorld {
         anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
         anyhow::ensure!(
-            matches!(saved.version, 1..=4) && saved.size == WORLD_SIZE,
+            matches!(saved.version, 1..=5) && saved.size == WORLD_SIZE,
             "unsupported 3D save version/dimensions"
         );
-        if saved.version == 4 {
+        anyhow::ensure!(
+            saved.version == 5 || saved.entity_archive.is_none(),
+            "unexpected entity reference in legacy world"
+        );
+        if saved.version >= 4 {
             anyhow::ensure!(
                 saved.blocks.is_empty() && saved.containers.is_empty() && saved.items.is_none(),
                 "flat data in chunk-based world"
@@ -479,8 +485,17 @@ impl VoxelWorld {
             let decoded = archive.restore()?;
             let mut world = Self::with_map(saved.seed, decoded.terrain);
             world.restore_containers(decoded.containers)?;
-            world.load_player_checkpoint(path, generation, decoded.items)?;
+            world.load_player_checkpoint(path, generation.clone(), decoded.items)?;
             world.tick = archive.last_update;
+            if saved.version == 5 {
+                anyhow::ensure!(
+                    saved.entity_archive.as_ref() == Some(&generation),
+                    "entity checkpoint mismatch"
+                );
+                world.load_entity_checkpoint(path, &generation)?;
+            } else {
+                containers::backup_version(path, &bytes, 4)?;
+            }
             return Ok(world);
         }
         anyhow::ensure!(
@@ -545,13 +560,15 @@ impl VoxelWorld {
         let folder = path.with_extension("chunks");
         std::fs::create_dir_all(&folder)?;
         crate::chunk_data::write_new(&folder.join(format!("{player_archive}.rkyv")), &chunks)?;
+        self.write_entity_checkpoint(path, &player_archive)?;
         let saved = Save {
-            version: 4,
+            version: 5,
             size: WORLD_SIZE,
             seed: self.world_seed,
             blocks: vec![],
             containers: vec![],
             chunk_archive: Some(player_archive.clone()),
+            entity_archive: Some(player_archive.clone()),
             player_archive: Some(player_archive),
             items: None,
         };
@@ -584,6 +601,8 @@ struct Save {
     items: Option<Vec<GroundItem3d>>,
     #[serde(default)]
     chunk_archive: Option<String>,
+    #[serde(default)]
+    entity_archive: Option<String>,
 }
 
 #[cfg(test)]
@@ -598,6 +617,7 @@ mod tests {
         w.npcs.clear();
         let position = [28.5, 7.0, 31.2];
         w.npcs.spawn((Npc {
+            uuid: *uuid::Uuid::new_v4().as_bytes(),
             actor: Actor3d {
                 id: 1 << 31,
                 kind: 1,
@@ -643,6 +663,7 @@ mod tests {
         w.npcs.clear();
         let position = [28.5, 7.0, 30.9];
         let npc = w.npcs.spawn((Npc {
+            uuid: *uuid::Uuid::new_v4().as_bytes(),
             actor: Actor3d {
                 id: 1 << 31,
                 kind: 1,
