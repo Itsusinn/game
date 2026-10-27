@@ -1,10 +1,12 @@
 use super::*;
 
-const HELP: &str = "指令：/tp x y z（脚底坐标，支持 ~、~偏移）；/fly [on|off]；/help";
+const HELP: &str =
+    "指令：/spawn（返回出生点）；/tp x y z（脚底坐标，支持 ~、~偏移）；/fly [on|off]；/help";
 
 #[derive(Debug, PartialEq)]
 enum Command {
     Help,
+    Spawn,
     Teleport([f32; 3]),
     Fly(Option<bool>),
 }
@@ -13,6 +15,8 @@ fn parse(text: &str, origin: [f32; 3]) -> Result<Command> {
     let words: Vec<_> = text.split_whitespace().collect();
     match words.as_slice() {
         ["/help"] => Ok(Command::Help),
+        ["/spawn"] => Ok(Command::Spawn),
+        ["/spawn", ..] => anyhow::bail!("用法：/spawn"),
         ["/fly"] => Ok(Command::Fly(None)),
         ["/fly", "on"] => Ok(Command::Fly(Some(true))),
         ["/fly", "off"] => Ok(Command::Fly(Some(false))),
@@ -85,7 +89,14 @@ impl VoxelWorld {
                 }
                 .into())
             }
-            Command::Teleport(position) => {
+            Command::Spawn | Command::Teleport(_) => {
+                let position = match command {
+                    Command::Spawn => self
+                        .spawn_position(id)
+                        .context("没有可用的出生点，请稍后重试。")?,
+                    Command::Teleport(position) => position,
+                    _ => unreachable!(),
+                };
                 use game_simulation::{HEIGHT, RADIUS};
                 anyhow::ensure!(
                     position[0] >= -WORLD_LIMIT as f32 + RADIUS
@@ -134,8 +145,13 @@ impl VoxelWorld {
                 p.open_container = None;
                 p.container_error.clear();
                 // Keep queued input sequence numbers: seq only acknowledges executed input.
+                let destination = if command == Command::Spawn {
+                    "已返回出生点"
+                } else {
+                    "已传送至"
+                };
                 Ok(format!(
-                    "已传送至 {:.2} {:.2} {:.2}。",
+                    "{destination} {:.2} {:.2} {:.2}。",
                     position[0], position[1], position[2]
                 ))
             }
@@ -206,6 +222,76 @@ mod tests {
     }
 
     #[test]
+    fn spawn_returns_to_free_slot_preserving_player_state_and_queued_input() {
+        let (mut w, _rx) = world();
+        let spawn = w.players[&1].body.position;
+        w.execute_command(1, "/tp -200.5 20 300.5").unwrap();
+        let (tx, _other_rx) = mpsc::channel(64);
+        w.register_player(2, tx).unwrap();
+        assert_eq!(w.players[&2].body.position, spawn);
+        w.input(1, 1, PlayerInput::default()).unwrap();
+        let p = w.players.get_mut(&1).unwrap();
+        p.hp = 42;
+        p.flying = true;
+        p.body.velocity = [1.0, -2.0, 3.0];
+        p.open_container = Some([26, 7, 30]);
+        p.container_error = "old error".into();
+        let inventory = p.inventory.clone();
+        let before = p.body;
+        assert!(w.execute_command(1, "/spawn").is_err());
+        assert_eq!(w.players[&1].body, before);
+        w.tick += 15;
+        let expected = w.spawn_position(1).unwrap();
+        assert_ne!(expected, spawn, "occupied spawn slot must be skipped");
+        w.chat(1, "/spawn".into()).unwrap();
+        let p = &w.players[&1];
+        assert_eq!(p.body.position, expected);
+        assert_eq!(p.body.velocity, [0.0; 3]);
+        assert_eq!(p.hp, 42);
+        assert!(p.flying);
+        assert_eq!(p.inventory, inventory);
+        assert!(p.open_container.is_none());
+        assert!(p.container_error.is_empty());
+        assert_eq!(p.last_seq, 0);
+        assert_eq!(p.inbox.len(), 1);
+        assert!(p.command_log.last().unwrap().text.contains("已返回出生点"));
+        assert!(w.player_log(&w.players[&2]).is_empty());
+        w.tick();
+        assert_eq!(w.players[&1].last_seq, 1);
+    }
+
+    #[test]
+    fn spawn_rejects_blocked_spawn_area_and_dead_players() {
+        let (mut w, _rx) = world();
+        w.execute_command(1, "/tp -200.5 20 300.5").unwrap();
+        let original = w.players[&1].body;
+        w.tick += 15;
+        w.players.get_mut(&1).unwrap().hp = 0;
+        assert!(w
+            .execute_command(1, "/spawn")
+            .unwrap_err()
+            .to_string()
+            .contains("复活"));
+        assert_eq!(w.players[&1].body, original);
+        w.players.get_mut(&1).unwrap().hp = 100;
+        for slot in 0..16 {
+            w.terrain
+                .set([28 + slot % 4 * 2, 7, 32 + slot / 4 * 2], STONE);
+        }
+        assert!(w
+            .execute_command(1, "/spawn")
+            .unwrap_err()
+            .to_string()
+            .contains("没有可用的出生点"));
+        assert_eq!(w.players[&1].body, original);
+        assert!(w
+            .execute_command(1, "/spawn")
+            .unwrap_err()
+            .to_string()
+            .contains("过快"));
+    }
+
+    #[test]
     fn command_feedback_is_private_and_flight_resets_after_respawn_and_reconnect() {
         let (mut w, _rx) = world();
         let (tx, _other_rx) = mpsc::channel(64);
@@ -236,6 +322,8 @@ mod tests {
 
     #[test]
     fn parses_absolute_relative_and_rejects_invalid_commands() {
+        assert_eq!(parse(" /spawn ", [0.0; 3]).unwrap(), Command::Spawn);
+        assert!(HELP.contains("/spawn"));
         assert_eq!(
             parse("/tp -20 15 30", [0.0; 3]).unwrap(),
             Command::Teleport([-20.0, 15.0, 30.0])
@@ -257,6 +345,7 @@ mod tests {
             "/tp 1 2",
             "/tp 1 2 3 4",
             "/fly maybe",
+            "/spawn extra",
             "/help extra",
             "/unknown",
         ] {

@@ -29,23 +29,29 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         // Keep the observer receive stream owned and drained throughout the test.
         let observer = tokio::spawn(async move {
             let mut saw_destination = false;
+            let mut saw_spawn = false;
             let mut saw_chat = false;
             while let Ok(message) = read_message(&mut recv2).await {
                 if let ServerMessage::World3d(s) = message {
                     assert!(!s.log.iter().any(|e| e.text.contains("未知指令")
                         || e.text.contains("飞行已开启")
-                        || e.text.contains("已传送至")));
+                        || e.text.contains("已传送至")
+                        || e.text.contains("已返回出生点")));
+                    saw_spawn |= saw_destination
+                        && s.actors
+                            .iter()
+                            .any(|a| a.id == id && a.position == [28.5, 7.0, 32.5]);
                     saw_destination |= s
                         .actors
                         .iter()
                         .any(|a| a.id == id && a.position[0] < -200.0);
                     saw_chat |= s.log.iter().any(|e| e.text.contains("public message"));
-                    if saw_destination && saw_chat {
+                    if saw_spawn && saw_chat {
                         return;
                     }
                 }
             }
-            panic!("observer missed teleport or public chat");
+            panic!("observer missed teleport, spawn return or public chat");
         });
         write_message(
             &mut send,
@@ -122,7 +128,6 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         )
         .await
         .unwrap();
-        observer.await.unwrap();
         // Ordinary malformed commands must not disconnect the sending player.
         write_message(
             &mut send,
@@ -137,6 +142,26 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         .await
         .unwrap();
         assert!(snapshot(&mut recv, 2).await.body.position[1] < 20.0);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        write_message(
+            &mut send,
+            &ClientMessage::Chat3d {
+                text: "/spawn".into(),
+            },
+        )
+        .await
+        .unwrap();
+        loop {
+            model.apply(read_message(&mut recv).await.unwrap());
+            assert!(model.terrain.blocks.len() <= 98);
+            if model.body.position == [28.5, 7.0, 32.5]
+                && model.terrain.nearby_known(model.body.position)
+            {
+                break;
+            }
+        }
+        assert!(model.flying);
+        observer.await.unwrap();
         c1.close(0u32.into(), b"done");
         c2.close(0u32.into(), b"done");
         let _ = stop.send(());
