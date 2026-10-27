@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 pub const CHUNK_EDGE: i32 = 16;
 /// Legacy spawn area's dimensions; not the streaming world's horizontal bounds.
 pub const WORLD_SIZE: [i32; 3] = [64, 32, 64];
-pub const WORLD_HEIGHT: i32 = 32;
+pub const WORLD_HEIGHT: i32 = 128;
+pub const SECTIONS_PER_COLUMN: usize = (WORLD_HEIGHT / CHUNK_EDGE) as usize;
+pub const MAX_LOADED_SECTIONS: usize = 49 * SECTIONS_PER_COLUMN;
 /// Conservative f32 physics/rendering precision limit.
 pub const WORLD_LIMIT: i32 = 32_768;
 pub const VIEW_RADIUS: i32 = 3;
@@ -31,6 +33,51 @@ pub const LEAVES: u8 = 5;
 pub const WATER: u8 = 6;
 pub const PLANK: u8 = 7;
 pub const CHEST: u8 = 8;
+pub const SAND: u8 = 9;
+pub const SANDSTONE: u8 = 10;
+pub const GRAVEL: u8 = 11;
+pub const CLAY: u8 = 12;
+pub const SNOW: u8 = 13;
+pub const ICE: u8 = 14;
+pub const MOSS_STONE: u8 = 15;
+pub const BASALT: u8 = 16;
+pub const BIRCH_WOOD: u8 = 17;
+pub const BIRCH_LEAVES: u8 = 18;
+pub const PINE_WOOD: u8 = 19;
+pub const PINE_LEAVES: u8 = 20;
+pub const COAL_ORE: u8 = 21;
+pub const IRON_ORE: u8 = 22;
+pub const COPPER_ORE: u8 = 23;
+/// Append-only IDs: wire values, archive palette names and inventory names stay stable.
+pub const BLOCK_IDS: [&str; 24] = [
+    "game:air",
+    "game:grass",
+    "game:dirt",
+    "game:stone",
+    "game:wood",
+    "game:leaves",
+    "game:water",
+    "game:plank",
+    "game:chest",
+    "game:sand",
+    "game:sandstone",
+    "game:gravel",
+    "game:clay",
+    "game:snow",
+    "game:ice",
+    "game:moss_stone",
+    "game:basalt",
+    "game:birch_wood",
+    "game:birch_leaves",
+    "game:pine_wood",
+    "game:pine_leaves",
+    "game:coal_ore",
+    "game:iron_ore",
+    "game:copper_ore",
+];
+pub fn valid_block(block: u8) -> bool {
+    (block as usize) < BLOCK_IDS.len()
+}
 pub const CONTAINER_SLOTS: usize = 24;
 pub const CONTAINER_STACK_LIMIT: u32 = 999;
 pub const CONTAINER_REACH: f32 = 3.5;
@@ -46,12 +93,27 @@ pub fn block_item_name(block: u8) -> Option<&'static str> {
         LEAVES => Some("树叶"),
         PLANK => Some("木板"),
         CHEST => Some("箱子"),
+        SAND => Some("沙子"),
+        SANDSTONE => Some("砂岩"),
+        GRAVEL => Some("砾石"),
+        CLAY => Some("黏土"),
+        SNOW => Some("雪块"),
+        ICE => Some("冰块"),
+        MOSS_STONE => Some("苔石"),
+        BASALT => Some("玄武岩"),
+        BIRCH_WOOD => Some("白桦原木"),
+        BIRCH_LEAVES => Some("白桦树叶"),
+        PINE_WOOD => Some("松木"),
+        PINE_LEAVES => Some("松针叶"),
+        COAL_ORE => Some("煤矿石"),
+        IRON_ORE => Some("铁矿石"),
+        COPPER_ORE => Some("铜矿石"),
         _ => None,
     }
 }
 
 pub fn item_block(name: &str) -> Option<u8> {
-    (GRASS..=CHEST).find(|&block| block_item_name(block) == Some(name))
+    (GRASS..BLOCK_IDS.len() as u8).find(|&block| block_item_name(block) == Some(name))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

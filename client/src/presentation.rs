@@ -7,6 +7,9 @@ pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
     let Some(blocks) = model.terrain.blocks.get(&origin) else {
         return mesh;
     };
+    if blocks.iter().all(|&b| b == AIR) {
+        return mesh;
+    }
     // Cache the six section references once. The hot loop uses contiguous byte
     // indices instead of BTreeMap lookups and signed coordinate division per face.
     let neighbors = NORMALS.map(|n| {
@@ -56,6 +59,21 @@ pub fn terrain_chunk(model: &Client3d, origin: [i32; 3]) -> Mesh {
                         WATER => ([0.29, 0.49, 0.58], 0),
                         PLANK => ([0.65, 0.51, 0.33], 1),
                         CHEST => ([0.62, 0.39, 0.18], if face == 5 { 6 } else { 5 }),
+                        SAND => ([0.78, 0.70, 0.49], 7),
+                        SANDSTONE => ([0.69, 0.56, 0.36], 8),
+                        GRAVEL => ([0.48, 0.48, 0.44], 9),
+                        CLAY => ([0.47, 0.43, 0.36], 7),
+                        SNOW => ([0.90, 0.94, 0.96], 10),
+                        ICE => ([0.53, 0.75, 0.84], 11),
+                        MOSS_STONE => ([0.36, 0.45, 0.28], 8),
+                        BASALT => ([0.24, 0.26, 0.28], 8),
+                        BIRCH_WOOD => ([0.82, 0.81, 0.70], 12),
+                        BIRCH_LEAVES => ([0.52, 0.63, 0.28], 13),
+                        PINE_WOOD => ([0.34, 0.24, 0.17], 12),
+                        PINE_LEAVES => ([0.19, 0.34, 0.26], 13),
+                        COAL_ORE => ([0.17, 0.18, 0.19], 14),
+                        IRON_ORE => ([0.65, 0.43, 0.30], 14),
+                        COPPER_ORE => ([0.41, 0.64, 0.48], 14),
                         _ => ([0.5, 0.5, 0.5], 0),
                     };
                     mesh.block_face(

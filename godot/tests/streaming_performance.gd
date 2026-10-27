@@ -22,7 +22,7 @@ func frame(measure := false, elapsed := 0.0) -> void:
 	scene._process(elapsed)
 	max_updates = maxi(max_updates,scene.terrain_updates_last_frame)
 	max_pending = maxi(max_pending,scene.terrain_pending.size())
-	if scene.terrain_updates_last_frame > 2 or scene.terrain_pending.size() > 98: failed = true
+	if scene.terrain_updates_last_frame > 2 or scene.terrain_pending.size() > 392: failed = true
 	if measure:
 		cpu.append(float(Time.get_ticks_usec()-before)/1000.0)
 		terrain.append(float(scene.terrain_usec)/1000.0)
@@ -50,7 +50,7 @@ func run() -> void:
 	elif OS.get_environment("CDDA_PERF_GI") == "off": scene.environment.sdfgi_enabled = false
 	scene._singleplayer()
 	var deadline := Time.get_ticks_msec() + 20000
-	while not scene.state.get("ready",false) or scene.state.get("loaded_sections",0) != 98 or not scene.terrain_pending.is_empty():
+	while not scene.state.get("ready",false) or scene.state.get("loaded_sections",0) != 392 or not scene.terrain_pending.is_empty():
 		await frame()
 		if Time.get_ticks_msec() > deadline:
 			push_error("initial world timed out")
@@ -60,10 +60,12 @@ func run() -> void:
 	for i in range(150): await frame()
 	scene.pitch = -0.55
 	# Repeated nearby teleports reproduce new strips of columns, then a full replacement.
-	for destination in [Vector3(64.5,20,32.5),Vector3(80.5,20,32.5),Vector3(96.5,20,32.5),Vector3(-200.5,20,300.5)]:
+	for destination in [Vector3(64.5,110,32.5),Vector3(80.5,110,32.5),Vector3(96.5,110,32.5),Vector3(-200.5,110,300.5)]:
 		scene.bridge.send_chat("/tp %s %s %s" % [destination.x,destination.y,destination.z])
 		var started := Time.get_ticks_msec()
-		while Time.get_ticks_msec()-started < 2500: await frame(true)
+		while Time.get_ticks_msec()-started < 2500 or not scene.terrain_pending.is_empty():
+			await frame(true)
+			if Time.get_ticks_msec()-started > 15000: break
 		if scene.state.body_position.distance_to(destination) > 0.1:
 			failed = true
 		if not scene.terrain_pending.is_empty():

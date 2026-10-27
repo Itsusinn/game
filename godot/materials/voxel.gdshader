@@ -82,6 +82,40 @@ void fragment() {
             albedo = soil * vec3(0.75,0.53,0.35);
         }
         if (pattern == 4) { albedo *= vec3(0.65,0.8,0.6); }
+    } else if (pattern >= 7) {
+        // Procedural geological detail preserves distinct surfaces without adding
+        // unlicensed assets. Color encodes the block's mineral/vegetation tint.
+        vec3 tint = albedo;
+        float grain = fract(sin(dot(floor(plane*24.0),vec2(127.1,311.7)))*43758.5453);
+        float broad = fract(sin(dot(floor(plane*3.0),vec2(269.5,183.3)))*43758.5453);
+        albedo = tint * (0.82+grain*0.3);
+        if (pattern == 8 || pattern == 9 || pattern == 14) {
+            float rock = dot(texture(stone_color,coords).rgb,vec3(0.333));
+            albedo = tint * (0.65+rock*1.4);
+            detail_normal = texture(stone_normal,coords).rgb;
+            if (pattern == 9) albedo *= 0.65 + broad*0.7;
+            if (pattern == 14) {
+                float vein = step(0.67,broad)*step(0.25,grain);
+                albedo = mix(vec3(0.18,0.19,0.18)*(0.65+rock),tint,vein);
+                metal = vein*0.25;
+            }
+        } else if (pattern == 10) {
+            roughness = 0.92;
+            albedo = tint*(0.94+grain*0.06);
+        } else if (pattern == 11) {
+            roughness = 0.32;
+            albedo = tint*(0.85+broad*0.15);
+        } else if (pattern == 12) {
+            coords = plane*vec2(0.65,0.4);
+            float bark = dot(texture(bark_color,coords).rgb,vec3(0.333));
+            albedo = tint*(0.55+bark*1.8);
+            detail_normal = texture(bark_normal,coords).rgb;
+            if (COLOR.r>0.7) albedo *= 1.0-step(0.87,fract(plane.y*2.0))*step(0.4,broad)*0.72;
+        } else if (pattern == 13) {
+            float leaf = dot(texture(grass_color,coords).rgb,vec3(0.333));
+            albedo = tint*(0.6+leaf*1.8);
+            detail_normal = texture(grass_normal,coords).rgb;
+        }
     }
     ALBEDO = albedo;
     NORMAL = surface_normal(detail_normal,coords,VERTEX,NORMAL);

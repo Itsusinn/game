@@ -16,20 +16,10 @@ use std::{
     path::Path,
 };
 
-pub const DATA_VERSION: u32 = 2;
+pub const DATA_VERSION: u32 = 3;
 const MAGIC: &[u8; 8] = b"DNGCHK01";
 const BLOCKS: usize = 4096;
-const IDS: [&str; 9] = [
-    "game:air",
-    "game:grass",
-    "game:dirt",
-    "game:stone",
-    "game:wood",
-    "game:leaves",
-    "game:water",
-    "game:plank",
-    "game:chest",
-];
+const IDS: [&str; 24] = protocol::BLOCK_IDS;
 
 #[derive(Archive, Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct BlockStates {
@@ -194,7 +184,7 @@ impl ChunkArchive {
         let mut chunks = Vec::new();
         for [x, z] in terrain.columns() {
             let mut sections = Vec::new();
-            for y in 0..WORLD_SIZE[1] / CHUNK_EDGE {
+            for y in 0..protocol::WORLD_HEIGHT / CHUNK_EDGE {
                 sections.push(Section {
                     y,
                     block_states: BlockStates::capture(&terrain.chunk([x * 16, y * 16, z * 16]))?,
@@ -263,10 +253,12 @@ impl ChunkArchive {
 
     pub fn restore(&self) -> Result<RestoredChunks> {
         anyhow::ensure!(
-            matches!(self.data_version, 1 | DATA_VERSION)
+            matches!(self.data_version, 1..=DATA_VERSION)
                 && self.size
                     == if self.data_version == 1 {
                         WORLD_SIZE
+                    } else if self.data_version == 2 {
+                        [0, 32, 0]
                     } else {
                         [0, protocol::WORLD_HEIGHT, 0]
                     }
@@ -301,13 +293,22 @@ impl ChunkArchive {
                 "duplicate or invalid chunk position"
             );
             anyhow::ensure!(
-                chunk.sections.len() == (WORLD_SIZE[1] / 16) as usize,
+                chunk.sections.len() == (self.size[1] / 16) as usize,
                 "missing section"
             );
             let mut sections = HashSet::new();
             for section in &chunk.sections {
                 anyhow::ensure!(
-                    (0..WORLD_SIZE[1] / 16).contains(&section.y) && sections.insert(section.y),
+                    self.data_version == DATA_VERSION
+                        || section
+                            .block_states
+                            .palette
+                            .iter()
+                            .all(|id| IDS[..=CHEST as usize].contains(&id.as_str())),
+                    "new block state in legacy archive"
+                );
+                anyhow::ensure!(
+                    (0..self.size[1] / 16).contains(&section.y) && sections.insert(section.y),
                     "duplicate or invalid section Y"
                 );
                 anyhow::ensure!(
@@ -318,6 +319,14 @@ impl ChunkArchive {
                     "invalid decoded section"
                 );
             }
+            // Only validated legacy archives gain air above their original ceiling.
+            // Missing sections in a current archive must still fail validation.
+            for y in (self.size[1]..protocol::WORLD_HEIGHT).step_by(16) {
+                terrain.apply_chunk(
+                    [chunk.x_pos * 16, y, chunk.z_pos * 16],
+                    &vec![protocol::AIR; BLOCKS],
+                );
+            }
         }
         let mut containers = Vec::new();
         let mut positions = HashSet::new();
@@ -325,7 +334,7 @@ impl ChunkArchive {
         let mut ids = HashSet::new();
         for chunk in &self.chunks {
             anyhow::ensure!(
-                chunk.block_entities.len() <= (16 * 16 * WORLD_SIZE[1]) as usize
+                chunk.block_entities.len() <= (16 * 16 * self.size[1]) as usize
                     && chunk.entities.len() <= 100_000,
                 "too many chunk entities"
             );

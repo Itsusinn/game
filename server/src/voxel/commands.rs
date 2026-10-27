@@ -184,10 +184,10 @@ mod tests {
         )
         .unwrap();
         w.players.get_mut(&1).unwrap().open_container = Some([26, 7, 30]);
-        w.execute_command(1, "/tp -200.5 20 300.5").unwrap();
-        assert!(w.terrain.nearby_known([-200.5, 20.0, 300.5]));
+        w.execute_command(1, "/tp -200.5 110 300.5").unwrap();
+        assert!(w.terrain.nearby_known([-200.5, 110.0, 300.5]));
         let p = &w.players[&1];
-        assert_eq!(p.body.position, [-200.5, 20.0, 300.5]);
+        assert_eq!(p.body.position, [-200.5, 110.0, 300.5]);
         assert_eq!(p.body.velocity, [0.0; 3]);
         assert_eq!(p.last_seq, 0);
         assert_eq!(p.inbox.len(), 1);
@@ -206,7 +206,7 @@ mod tests {
         let other = w.players[&2].body.position;
         for text in [
             "/tp 0 0 0".into(),
-            "/tp 1 31 1".into(),
+            "/tp 1 127 1".into(),
             "/tp NaN 5 5".into(),
             format!("/tp {} {} {}", other[0], other[1], other[2]),
         ] {
@@ -225,7 +225,7 @@ mod tests {
     fn spawn_returns_to_free_slot_preserving_player_state_and_queued_input() {
         let (mut w, _rx) = world();
         let spawn = w.players[&1].body.position;
-        w.execute_command(1, "/tp -200.5 20 300.5").unwrap();
+        w.execute_command(1, "/tp -200.5 110 300.5").unwrap();
         let (tx, _other_rx) = mpsc::channel(64);
         w.register_player(2, tx).unwrap();
         assert_eq!(w.players[&2].body.position, spawn);
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn spawn_rejects_blocked_spawn_area_and_dead_players() {
         let (mut w, _rx) = world();
-        w.execute_command(1, "/tp -200.5 20 300.5").unwrap();
+        w.execute_command(1, "/tp -200.5 110 300.5").unwrap();
         let original = w.players[&1].body;
         w.tick += 15;
         w.players.get_mut(&1).unwrap().hp = 0;
@@ -341,7 +341,7 @@ mod tests {
             "/tp NaN 10 0",
             "/tp inf 10 0",
             "/tp 32768 10 0",
-            "/tp 0 32 0",
+            "/tp 0 128 0",
             "/tp 1 2",
             "/tp 1 2 3 4",
             "/fly maybe",

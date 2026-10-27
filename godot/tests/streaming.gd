@@ -31,7 +31,7 @@ func run() -> void:
 	scene.hud.menu.loading_settings = true
 	scene.set_process(false)
 	scene._singleplayer()
-	if not await settle(func(): return scene.state.ready and scene.state.loaded_sections == 98 and scene.terrain_pending.is_empty()):
+	if not await settle(func(): return scene.state.ready and scene.state.loaded_sections == 392 and scene.terrain_pending.is_empty()):
 		check(false,"streaming fixture ready")
 		quit(1)
 		return
@@ -51,12 +51,12 @@ func run() -> void:
 		scene._focus_gained()
 		Input.action_press("left")
 		scene._process(1.0/30.0)
-		if scene.state.loaded_sections > 98: check(false,"bounded client cache")
+		if scene.state.loaded_sections > 392: check(false,"bounded client cache")
 		if scene.state.body_position.x < destination: break
 		await create_timer(1.0/30.0).timeout
 	Input.action_release("left")
 	check(scene.state.body_position.x < destination,"walk crosses negative chunk boundary")
-	check(await settle(func(): return scene.state.loaded_sections == 98 and scene.terrain_nodes.has(incoming)),"new edge generated and rendered")
+	check(await settle(func(): return scene.state.loaded_sections == 392 and scene.terrain_nodes.has(incoming)),"new edge generated and rendered")
 	check(not scene.terrain_nodes.has(obsolete),"obsolete mesh node removed")
 	if DisplayServer.get_name() != "headless":
 		for i in range(40):

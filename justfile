@@ -88,6 +88,10 @@ godot-streaming:
 godot-streaming-perf:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 streaming-perf
 
+# 实际图形窗口验证六类生态、128 格高度、保存重开与区块卸载
+godot-ecology:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 ecology
+
 # 使用隔离世界验证聊天指令、传送、飞行与输入隔离
 godot-commands:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 commands

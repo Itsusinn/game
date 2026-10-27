@@ -86,7 +86,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         write_message(
             &mut send,
             &ClientMessage::Chat3d {
-                text: "/tp -200.5 20 300.5".into(),
+                text: "/tp -200.5 110 300.5".into(),
             },
         )
         .await
@@ -99,12 +99,12 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         });
         loop {
             model.apply(read_message(&mut recv).await.unwrap());
-            assert!(model.terrain.blocks.len() <= 98);
+            assert!(model.terrain.blocks.len() <= MAX_LOADED_SECTIONS);
             if model.body.position[0] < -200.0 && model.terrain.nearby_known(model.body.position) {
                 break;
             }
         }
-        assert_eq!(model.body.position, [-200.5, 20.0, 300.5]);
+        assert_eq!(model.body.position, [-200.5, 110.0, 300.5]);
         assert!(model.flying);
         write_message(
             &mut send,
@@ -141,7 +141,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         )
         .await
         .unwrap();
-        assert!(snapshot(&mut recv, 2).await.body.position[1] < 20.0);
+        assert!(snapshot(&mut recv, 2).await.body.position[1] < 110.0);
         tokio::time::sleep(Duration::from_millis(600)).await;
         write_message(
             &mut send,
@@ -153,7 +153,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         .unwrap();
         loop {
             model.apply(read_message(&mut recv).await.unwrap());
-            assert!(model.terrain.blocks.len() <= 98);
+            assert!(model.terrain.blocks.len() <= MAX_LOADED_SECTIONS);
             if model.body.position == [28.5, 7.0, 32.5]
                 && model.terrain.nearby_known(model.body.position)
             {
@@ -178,7 +178,7 @@ async fn exploration_streams_generated_columns_unloads_and_reconnects_at_negativ
         // An isolated flat runway removes randomized trees/combat from this movement test.
         for x in (-64..112).step_by(16) {
             for z in (16..48).step_by(16) {
-                for y in [0, 16] {
+                for y in (0..WORLD_HEIGHT).step_by(16) {
                     let mut blocks = vec![AIR; 4096];
                     if y == 0 {
                         for by in 0..=6 {
@@ -755,7 +755,7 @@ async fn two_clients_receive_voxels_move_jump_chat_and_disconnect_over_verified_
                 _ => {}
             }
         };
-        assert!((18..=98).contains(&chunks));
+        assert!((72..=MAX_LOADED_SECTIONS).contains(&chunks));
         assert!(map.nearby_known(initial.body.position));
         assert!(map.solid([28, 6, 32]));
         let (_e2, c2) = connect_endpoint(address, cert).await.unwrap();

@@ -7,8 +7,10 @@ fn streaming_messages_preserve_signed_coordinates() {
             column: [-2048, 2047],
         },
         ServerMessage::Chunk3d {
-            origin: [-16, 16, -32],
-            blocks: vec![protocol::AIR; 4096],
+            origin: [-16, 112, -32],
+            blocks: (0..4096)
+                .map(|i| (i % protocol::BLOCK_IDS.len()) as u8)
+                .collect(),
         },
     ] {
         assert_eq!(
@@ -37,7 +39,7 @@ fn block_edits_and_item_mapping_roundtrip() {
             message
         );
     }
-    for block in GRASS..=CHEST {
+    for block in GRASS..BLOCK_IDS.len() as u8 {
         if let Some(name) = block_item_name(block) {
             assert_eq!(item_block(name), Some(block));
         }

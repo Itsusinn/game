@@ -263,6 +263,75 @@ mod tests {
     }
 
     #[test]
+    fn v6_height_upgrade_preserves_edits_and_backs_up_all_archives() {
+        let dir = directory();
+        let path = dir.path().join("world3d.bin");
+        let mut w = VoxelWorld::new(17);
+        terrain::ensure_column(&mut w.terrain, 17, [-3, 7]);
+        // Build an actual old-format fixture with only old block IDs and two sections.
+        for blocks in w.terrain.blocks.values_mut() {
+            for b in blocks {
+                if *b > CHEST {
+                    *b = STONE;
+                }
+            }
+        }
+        w.terrain.set([-40, 20, 115], PLANK);
+        w.npcs.clear();
+        register(&mut w, 1, [8; 16], "Explorer");
+        w.players.get_mut(&1).unwrap().hp = 61;
+        w.save(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let mut saved: Save = rmp_serde::from_slice(&bytes[8..]).unwrap();
+        saved.version = 6;
+        saved.size = [0, 32, 0];
+        let generation = saved.chunk_archive.as_ref().unwrap();
+        let cp = path
+            .with_extension("chunks")
+            .join(format!("{generation}.rkyv"));
+        let mut chunks = crate::chunk_data::read(&cp).unwrap();
+        chunks.data_version = 2;
+        chunks.size = [0, 32, 0];
+        for c in &mut chunks.chunks {
+            c.data_version = 2;
+            c.sections.retain(|s| s.y < 2);
+        }
+        std::fs::remove_file(&cp).unwrap();
+        crate::chunk_data::write_new(&cp, &chunks).unwrap();
+        let mut original = b"DNG3D001".to_vec();
+        original.extend(rmp_serde::to_vec(&saved).unwrap());
+        std::fs::write(&path, &original).unwrap();
+        let migrated = VoxelWorld::load(&path).unwrap();
+        assert_eq!(migrated.terrain.get([-40, 20, 115]), PLANK);
+        assert_eq!(migrated.terrain.get([-40, 127, 115]), AIR);
+        assert_eq!(migrated.saved_players[&[8; 16]].health, 61.0);
+        assert!(migrated.npcs.is_empty());
+        assert_eq!(
+            std::fs::read(path.with_extension("v6.bak")).unwrap(),
+            original
+        );
+        for ext in ["chunks", "players", "entities"] {
+            let source = path.with_extension(ext).join(format!("{generation}.rkyv"));
+            let backup = dir
+                .path()
+                .join(format!("world3d.v6.bak.{ext}/{generation}.rkyv"));
+            assert_eq!(
+                std::fs::read(source).unwrap(),
+                std::fs::read(backup).unwrap()
+            );
+        }
+        migrated.save(&path).unwrap();
+        assert_eq!(VoxelWorld::load(&path).unwrap().terrain, migrated.terrain);
+        // A missing high section in v7 is corruption, never a migration opportunity.
+        let latest: Save = rmp_serde::from_slice(&std::fs::read(&path).unwrap()[8..]).unwrap();
+        let cp = path
+            .with_extension("chunks")
+            .join(format!("{}.rkyv", latest.chunk_archive.unwrap()));
+        let mut archive = crate::chunk_data::read(&cp).unwrap();
+        archive.chunks[0].sections.pop();
+        assert!(archive.restore().is_err());
+    }
+    #[test]
     fn v5_migration_preserves_old_area_players_and_dead_monsters() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
@@ -288,6 +357,7 @@ mod tests {
         chunks.size = WORLD_SIZE;
         for c in &mut chunks.chunks {
             c.data_version = 1;
+            c.sections.retain(|s| s.y < 2);
         }
         let mut entities = crate::entity_data::read(&ep).unwrap();
         entities.data_version = 1;
@@ -448,6 +518,7 @@ mod tests {
         old.size = WORLD_SIZE;
         for c in &mut old.chunks {
             c.data_version = 1;
+            c.sections.retain(|s| s.y < 2);
         }
         std::fs::remove_file(&chunk_path).unwrap();
         crate::chunk_data::write_new(&chunk_path, &old).unwrap();
@@ -743,7 +814,7 @@ mod tests {
         loaded.save(&path).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let save: Save = rmp_serde::from_slice(&bytes[8..]).unwrap();
-        assert_eq!(save.version, 6);
+        assert_eq!(save.version, 7);
         assert!(save.blocks.is_empty() && save.containers.is_empty() && save.items.is_none());
         assert_eq!(save.player_archive, save.chunk_archive);
         let restored = VoxelWorld::load(&path).unwrap();

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing','streaming','commands','streaming-perf')]
+    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing','streaming','commands','streaming-perf','ecology')]
     [string]$Action = 'run',
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$GameArgs
@@ -40,6 +40,12 @@ function Build-Extension([bool]$Release) {
 
 Build-Extension $false
 if ($Action -eq 'build') { exit 0 }
+if ($Action -eq 'ecology') {
+    & cargo test -p server --jobs 2 ecology_sites_cover_materials_and_emit_graphics_fixture
+    if ($LASTEXITCODE -ne 0) { throw 'Ecology fixture failed.' }
+    & $godotExe --path godot --script res://tests/ecology.gd
+    exit $LASTEXITCODE
+}
 if ($Action -eq 'streaming-perf') {
     & $godotExe --path godot --script res://tests/streaming_performance.gd
     exit $LASTEXITCODE

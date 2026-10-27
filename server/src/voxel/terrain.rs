@@ -1,73 +1,19 @@
 use game_simulation::grid::Grid;
 use protocol::*;
 
-/// Generate a complete column using world coordinates, independent of visit order.
-/// The original 64x64 authored area is retained by generate()/legacy migration.
+#[path = "ecology.rs"]
+mod ecology;
+
+/// World-coordinate generation is independent of exploration order.
 pub(super) fn ensure_column(map: &mut Grid, seed: u64, c: [i32; 2]) {
     if map.has_column(c) || !valid_column(c) {
         return;
     }
-    let [ox, oz] = c.map(|v| v * 16);
-    let mut column = Grid::unknown();
-    for y in [0, 16] {
-        column.apply_chunk([ox, y, oz], &vec![AIR; 4096]);
-    }
-    let height =
-        |x: i32, z: i32| 5 + ((x as f32 * 0.16).sin() * 1.5 + (z as f32 * 0.19).cos() * 1.5) as i32;
-    for z in oz..oz + 16 {
-        for x in ox..ox + 16 {
-            let h = height(x, z);
-            for y in 0..=h {
-                column.set(
-                    [x, y, z],
-                    if y == h {
-                        GRASS
-                    } else if y > h - 3 {
-                        DIRT
-                    } else {
-                        STONE
-                    },
-                );
-            }
-        }
-    }
-    // Examine neighboring tree roots as well, clipping writes to this column.
-    for z in oz - 2..oz + 18 {
-        for x in ox - 2..ox + 18 {
-            // No new tree roots in the preserved, authored spawn area.
-            if (0..64).contains(&x) && (0..64).contains(&z) {
-                continue;
-            }
-            let hash = (x as i64 as u64)
-                .wrapping_mul(73)
-                .wrapping_add((z as i64 as u64).wrapping_mul(193))
-                .wrapping_add(seed);
-            if !hash.is_multiple_of(53) {
-                continue;
-            }
-            let h = height(x, z);
-            for y in h + 1..=h + 4 {
-                column.set([x, y, z], WOOD);
-            }
-            for dy in 3..=6 {
-                for dz in -2i32..=2 {
-                    for dx in -2i32..=2 {
-                        if dx.abs() + dz.abs() <= 3 && (dy < 6 || dx.abs() + dz.abs() <= 1) {
-                            let p = [x + dx, h + dy, z + dz];
-                            if column.get(p) == AIR {
-                                column.set(p, LEAVES);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    for (origin, blocks) in column.blocks {
-        map.apply_chunk(origin, &blocks);
+    let blocks = ecology::column(seed, c);
+    for (y, section) in blocks.as_chunks::<4096>().0.iter().enumerate() {
+        map.apply_chunk([c[0] * 16, y as i32 * 16, c[1] * 16], section);
     }
 }
-
 pub fn generate(seed: u64) -> Grid {
     let mut map = Grid::empty();
     for z in 0..64 {

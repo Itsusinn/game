@@ -469,10 +469,12 @@ impl VoxelWorld {
         anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
         anyhow::ensure!(
-            matches!(saved.version, 1..=6)
+            matches!(saved.version, 1..=7)
                 && saved.size
-                    == if saved.version == 6 {
+                    == if saved.version == 7 {
                         [0, WORLD_HEIGHT, 0]
+                    } else if saved.version == 6 {
+                        [0, 32, 0]
                     } else {
                         WORLD_SIZE
                     },
@@ -506,11 +508,18 @@ impl VoxelWorld {
                 "chunk checkpoint identity mismatch"
             );
             anyhow::ensure!(
-                archive.data_version == if saved.version == 6 { 2 } else { 1 },
+                archive.data_version
+                    == if saved.version == 7 {
+                        3
+                    } else if saved.version == 6 {
+                        2
+                    } else {
+                        1
+                    },
                 "world/chunk version mismatch"
             );
             let decoded = archive.restore()?;
-            if saved.version == 6 {
+            if saved.version >= 6 {
                 let columns = saved
                     .generated_columns
                     .context("missing generated column manifest")?;
@@ -532,7 +541,7 @@ impl VoxelWorld {
                 );
                 world.load_entity_checkpoint(path, &generation)?;
             }
-            if saved.version < 6 {
+            if saved.version < 7 {
                 containers::backup_version(path, &bytes, saved.version)?;
             }
             return Ok(world);
@@ -556,7 +565,6 @@ impl VoxelWorld {
                 "v1 save contains unexpected container data"
             );
             world.add_migration_chest()?;
-            containers::backup_version(path, &bytes, 1)?;
         } else {
             world.restore_containers(saved.containers)?;
         }
@@ -566,16 +574,13 @@ impl VoxelWorld {
                 saved.player_archive.context("missing player checkpoint")?,
                 saved.items.context("missing saved ground items")?,
             )?;
-            containers::backup_version(path, &bytes, 3)?;
         } else {
             anyhow::ensure!(
                 saved.player_archive.is_none() && saved.items.is_none(),
                 "unexpected player data in legacy world"
             );
-            if saved.version == 2 {
-                containers::backup_version(path, &bytes, 2)?;
-            }
         }
+        containers::backup_version(path, &bytes, saved.version)?;
         Ok(world)
     }
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -596,7 +601,7 @@ impl VoxelWorld {
         crate::chunk_data::write_new(&folder.join(format!("{player_archive}.rkyv")), &chunks)?;
         self.write_entity_checkpoint(path, &player_archive)?;
         let saved = Save {
-            version: 6,
+            version: 7,
             size: [0, WORLD_HEIGHT, 0],
             generated_columns: Some(self.terrain.columns().into_iter().collect()),
             seed: self.world_seed,

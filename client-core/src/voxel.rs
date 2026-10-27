@@ -67,7 +67,7 @@ impl Client3d {
                 }
                 self.terrain.unload_column(column);
                 self.revision += 1;
-                for y in [0, 16] {
+                for y in (0..WORLD_HEIGHT).step_by(16) {
                     self.dirty_section([column[0] * 16, y, column[1] * 16]);
                 }
             }
@@ -222,7 +222,7 @@ mod tests {
         let c = column_at(s.body.position);
         for z in -1..=1 {
             for x in -1..=1 {
-                for y in [0, 16] {
+                for y in (0..WORLD_HEIGHT).step_by(16) {
                     m.apply(ServerMessage::Chunk3d {
                         origin: [(c[0] + x) * 16, y, (c[1] + z) * 16],
                         blocks: vec![AIR; 4096],

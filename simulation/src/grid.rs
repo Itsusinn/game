@@ -58,7 +58,7 @@ impl Grid {
     }
     pub fn apply_chunk(&mut self, origin: [i32; 3], blocks: &[u8]) -> bool {
         if blocks.len() != 4096
-            || blocks.iter().any(|b| *b > protocol::CHEST)
+            || blocks.iter().any(|b| !protocol::valid_block(*b))
             || !protocol::valid_voxel(origin)
             || origin.iter().any(|v| v.rem_euclid(16) != 0)
         {
@@ -107,7 +107,7 @@ impl Grid {
     }
     /// Original spawn area's sections (offline demo and old save migration).
     pub fn origins() -> impl Iterator<Item = [i32; 3]> {
-        (0..32).step_by(16).flat_map(|y| {
+        (0..protocol::WORLD_HEIGHT).step_by(16).flat_map(|y| {
             (0..64)
                 .step_by(16)
                 .flat_map(move |z| (0..64).step_by(16).map(move |x| [x, y, z]))

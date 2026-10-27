@@ -71,16 +71,16 @@ func run() -> void:
 	check(not Input.is_action_pressed("descend") and not Input.is_action_pressed("sprint"), "focus loss clears descent and acceleration")
 	scene._focus_gained()
 	key(KEY_SLASH)
-	submit("/tp -200.5 20 300.5")
-	check(await settle(func(): return scene.state.body_position.distance_to(Vector3(-200.5,20,300.5)) < 0.01), "command teleports to negative coordinates")
-	check(await settle(func(): return scene.terrain_nodes.has(Vector3i(-208,0,288)) and scene.state.loaded_sections == 98), "teleport streams destination and unloads old columns")
+	submit("/tp -200.5 110 300.5")
+	check(await settle(func(): return scene.state.body_position.distance_to(Vector3(-200.5,110,300.5)) < 0.01), "command teleports to negative coordinates")
+	check(await settle(func(): return scene.terrain_nodes.has(Vector3i(-208,0,288)) and scene.state.loaded_sections == 392), "teleport streams destination and unloads old columns")
 	check(scene.state.position.distance_to(scene.state.body_position) < 0.01, "camera resets interpolation after teleport")
 	submit("/unknown")
 	check(await settle(func(): return scene.hud.journal.text.contains("未知指令")), "unknown command reports an error without disconnecting")
 	await create_timer(0.6).timeout
 	submit("/tp 0 0 0")
 	check(await settle(func(): return scene.hud.journal.text.contains("落点被方块占用")), "solid destination rejected")
-	check(scene.state.body_position.distance_to(Vector3(-200.5,20,300.5)) < 0.01, "failed teleport preserves position")
+	check(scene.state.body_position.distance_to(Vector3(-200.5,110,300.5)) < 0.01, "failed teleport preserves position")
 	if DisplayServer.get_name() != "headless":
 		for i in range(45):
 			scene._process(0.0)
@@ -89,7 +89,7 @@ func run() -> void:
 		check(root.get_texture().get_image().save_png(path.get_base_dir().path_join("commands.png")) == OK,"graphical command screenshot saved")
 	await create_timer(0.6).timeout
 	submit("/fly off")
-	check(await settle(func(): return not scene.state.flying and scene.state.body_position.y < 20), "flight off restores gravity")
+	check(await settle(func(): return not scene.state.flying and scene.state.body_position.y < 110), "flight off restores gravity")
 	await create_timer(0.6).timeout
 	submit("/fly on")
 	check(await settle(func(): return scene.state.flying), "flight can be reenabled")

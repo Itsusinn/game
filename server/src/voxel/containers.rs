@@ -38,13 +38,39 @@ pub(super) fn backup_version(path: &Path, bytes: &[u8], version: u32) -> Result<
             .open(&backup)
         {
             Ok(mut file) => {
+                // Keep an independent copy of every immutable archive directory,
+                // not only a manifest that still depends on the live directories.
+                for extension in ["chunks", "players", "entities"] {
+                    let source = path.with_extension(extension);
+                    if !source.exists() {
+                        continue;
+                    }
+                    let destination =
+                        std::path::PathBuf::from(format!("{}.{extension}", backup.display()));
+                    std::fs::create_dir_all(&destination)?;
+                    for entry in std::fs::read_dir(source)? {
+                        let entry = entry?;
+                        anyhow::ensure!(
+                            entry.file_type()?.is_file(),
+                            "unexpected archive directory entry"
+                        );
+                        let dest = destination.join(entry.file_name());
+                        let data = std::fs::read(entry.path())?;
+                        let mut copy = std::fs::OpenOptions::new()
+                            .create_new(true)
+                            .write(true)
+                            .open(dest)?;
+                        copy.write_all(&data)?;
+                        copy.sync_all()?;
+                    }
+                }
                 file.write_all(bytes)
                     .context("back up old world before migration")?;
                 file.sync_all()?;
                 return Ok(());
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                if std::fs::read(&backup)? == bytes {
+                if std::fs::read(&backup)? == bytes && archive_backup_complete(path, &backup)? {
                     return Ok(());
                 }
             }
@@ -52,6 +78,24 @@ pub(super) fn backup_version(path: &Path, bytes: &[u8], version: u32) -> Result<
         }
     }
     anyhow::bail!("no free world backup filename")
+}
+
+fn archive_backup_complete(path: &Path, backup: &Path) -> Result<bool> {
+    for extension in ["chunks", "players", "entities"] {
+        let source = path.with_extension(extension);
+        if !source.exists() {
+            continue;
+        }
+        let destination = std::path::PathBuf::from(format!("{}.{extension}", backup.display()));
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            let dest = destination.join(entry.file_name());
+            if !dest.is_file() || std::fs::read(dest)? != std::fs::read(entry.path())? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 impl VoxelWorld {

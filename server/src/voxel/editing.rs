@@ -203,6 +203,33 @@ mod tests {
         assert!(w.players[&1].inventory.is_empty());
     }
     #[test]
+    fn every_new_block_can_be_collected_placed_and_saved_above_old_ceiling() {
+        let (mut w, _rx) = world();
+        w.players.get_mut(&1).unwrap().body.position = [10.5, 65.0, 10.5];
+        w.terrain.set([10, 66, 6], STONE);
+        for block in SAND..=COPPER_ORE {
+            w.terrain.set([10, 66, 7], block);
+            w.tick += 6;
+            w.apply_block_edit(1, command(&w, false)).unwrap();
+            assert_eq!(w.terrain.get([10, 66, 7]), AIR);
+            assert_eq!(
+                w.players[&1].inventory.slots[0].as_ref().unwrap().name,
+                block_item_name(block).unwrap()
+            );
+            w.tick += 6;
+            w.apply_block_edit(1, command(&w, true)).unwrap();
+            assert_eq!(w.terrain.get([10, 66, 7]), block);
+            assert!(w.players[&1].inventory.is_empty());
+            w.terrain.set([block as i32, 100, 12], block);
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/ecology-edit");
+        std::fs::create_dir_all(&root).unwrap();
+        let dir = tempfile::tempdir_in(root).unwrap();
+        let path = dir.path().join("world3d.bin");
+        w.save(&path).unwrap();
+        assert_eq!(VoxelWorld::load(&path).unwrap().terrain, w.terrain);
+    }
+    #[test]
     fn break_place_conserve_inventory_broadcast_and_persist() {
         let (mut w, mut rx) = world();
         let c = command(&w, false);

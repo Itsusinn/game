@@ -47,7 +47,15 @@ func _draw() -> void:
 		draw_rect(Rect2(center-Vector2(16,13),Vector2(33,29)),Color(0,0,0,0.45))
 		draw_texture_rect(texture,Rect2(center-Vector2(16,16),Vector2(32,28)),false,tint)
 		draw_rect(Rect2(center-Vector2(16,16),Vector2(32,28)),Color("797468"),false,1)
-		if item.name not in ["石块","草方块","泥土","树叶","原木","木板"]:
+		var minerals := {"沙子":"c7b37d","砂岩":"b08f5c","砾石":"7a7a70","黏土":"786e5c","雪块":"e5eff5","冰块":"87bfd6","苔石":"5c7347","玄武岩":"3d4247","煤矿石":"34363a","铁矿石":"a66e4c","铜矿石":"69a37a"}
+		var plants := {"白桦原木":"d1cfb3","白桦树叶":"85a147","松木":"573d2b","松针叶":"305742"}
+		if minerals.has(item.name) or plants.has(item.name):
+			var color := Color(str(minerals.get(item.name,plants.get(item.name,"ffffff"))))
+			draw_rect(Rect2(center-Vector2(16,16),Vector2(32,28)),color)
+			for n in range(7):
+				var point := center+Vector2((n*11)%27-13,(n*7)%23-13)
+				draw_rect(Rect2(point,Vector2(3,2)),color.darkened(0.25))
+		if item.name == "箱子" or item.name in ["Supplies","Tool"]:
 			draw_line(center-Vector2(15,8),center+Vector2(15,-8),Color("363a32"),2)
 			draw_rect(Rect2(center-Vector2(11,15),Vector2(3,26)),Color("4a4f46"))
 			draw_rect(Rect2(center+Vector2(8,-15),Vector2(3,26)),Color("4a4f46"))
