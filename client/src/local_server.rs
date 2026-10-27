@@ -71,10 +71,11 @@ async fn run(
     }
     // Held until save completes; a second local client must not overwrite this world.
     let _lock = server::voxel::lock_world(&path)?;
+    VoxelWorld::validate_generation()?;
     let mut world = if path.exists() {
         VoxelWorld::load(&path)?
     } else {
-        VoxelWorld::new(12345)
+        VoxelWorld::new(12345)?
     };
     world.set_save_path(path.clone());
     let manager = Arc::new(Mutex::new(world));

@@ -120,7 +120,10 @@ fn corrupt_save_is_reported_and_preserved() {
 #[test]
 fn save_failure_is_reported_without_replacing_previous_map() {
     let path = test_path("save-error");
-    server::voxel::VoxelWorld::new(12345).save(&path).unwrap();
+    server::voxel::VoxelWorld::new(12345)
+        .unwrap()
+        .save(&path)
+        .unwrap();
     let original = std::fs::read(&path).unwrap();
     let mut session = Session::default();
     session.identity_path = path.with_extension("client.uuid");

@@ -279,7 +279,7 @@ mod tests {
     const CHEST_POS: [i32; 3] = [26, 7, 30];
 
     fn world() -> VoxelWorld {
-        let mut w = VoxelWorld::new(7);
+        let mut w = VoxelWorld::fixture(7);
         w.npcs.clear();
         for id in 1..=2 {
             let (tx, _rx) = mpsc::channel(64);
@@ -504,7 +504,7 @@ mod tests {
     fn version_one_is_backed_up_and_migrated_without_overwriting_blocks() {
         let dir = tempdir();
         let path = dir.path().join("world3d.bin");
-        let mut terrain = terrain::generate(7);
+        let mut terrain = legacy_fixture::generate(7);
         terrain.set(CHEST_POS, STONE); // Occupied preferred position must be preserved.
         let mut bytes = b"DNG3D001".to_vec();
         bytes.extend(
@@ -547,7 +547,7 @@ mod tests {
     fn corrupt_container_save_and_failed_backup_preserve_original() {
         let dir = tempdir();
         let path = dir.path().join("world3d.bin");
-        let w = VoxelWorld::new(7);
+        let w = VoxelWorld::fixture(7);
         let mut saved = Save {
             version: 2,
             size: WORLD_SIZE,

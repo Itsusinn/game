@@ -43,7 +43,7 @@ func run() -> void:
 	var start: Vector3 = a.snapshot().body_position
 	var peak := start.y
 	for i in range(12):
-		await step_pair({"forward":1.0,"strafe":1.0,"jump":i == 0})
+		await step_pair({"forward":1.0,"strafe":1.0,"jump":i == 0,"pickup":true})
 		peak = maxf(peak,a.snapshot().body_position.y)
 	check(a.snapshot().body_position.z < start.z and peak > start.y + 0.1,"native prediction and authoritative jumping")
 	var observed := false

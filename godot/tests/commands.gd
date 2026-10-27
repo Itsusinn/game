@@ -46,6 +46,7 @@ func run() -> void:
 		quit(1)
 		return
 	scene._focus_gained()
+	var initial_spawn: Vector3 = scene.state.body_position
 	key(KEY_SLASH)
 	check(scene.hud.inventory_open and scene.hud.chat.has_focus() and scene.hud.chat.text == "/", "slash opens focused command entry")
 	check(not scene.captured, "command entry releases mouse")
@@ -101,7 +102,7 @@ func run() -> void:
 	key(KEY_SLASH)
 	submit("/spawn")
 	check(await settle(func(): return scene.hud.journal.text.contains("已返回出生点")), "spawn command returns through chat")
-	check(await settle(func(): return scene.state.ready and scene.state.body_position.distance_to(Vector3(28.5,7,32.5)) < 0.1), "spawn restores authoritative position and nearby chunks")
+	check(await settle(func(): return scene.state.ready and scene.state.body_position.distance_to(initial_spawn) < 0.1), "spawn restores authoritative position and nearby chunks")
 	check(scene.state.position.distance_to(scene.state.body_position) < 0.01, "spawn resets camera interpolation")
 	check(await settle(func(): return scene.terrain_nodes.has(Vector3i(16,0,32)) and not scene.terrain_nodes.has(Vector3i(-208,0,288))), "spawn replaces distant terrain meshes")
 	scene._leave_game(false)

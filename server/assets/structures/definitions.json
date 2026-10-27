@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "placement": { "spacing": 24, "separation": 8, "salt": 31859271 },
+  "structures": [
+    {
+      "id": "village", "weight": 3,
+      "biomes": ["grassland", "forest", "taiga", "desert", "snow"],
+      "terrain_adaptation": "terrace", "max_slope": 7, "max_distance_from_center": 24,
+      "pieces": [
+        { "offset": [0,0], "rotation": 0, "pool": [{ "template": "village_paths", "weight": 1 }] },
+        { "offset": [0,0], "rotation": 0, "pool": [{ "template": "well", "weight": 1 }] },
+        { "offset": [-11,-11], "rotation": 0, "pool": [{ "template": "cottage", "weight": 2 }, { "template": "hall", "weight": 1 }] },
+        { "offset": [11,-11], "rotation": 0, "pool": [{ "template": "cottage", "weight": 2 }, { "template": "hall", "weight": 1 }] },
+        { "offset": [-11,11], "rotation": 2, "pool": [{ "template": "cottage", "weight": 2 }, { "template": "hall", "weight": 1 }] },
+        { "offset": [11,11], "rotation": 2, "pool": [{ "template": "cottage", "weight": 2 }, { "template": "hall", "weight": 1 }] }
+      ]
+    },
+    {
+      "id": "castle", "weight": 1,
+      "biomes": ["grassland", "forest", "taiga", "snow"],
+      "terrain_adaptation": "terrace", "max_slope": 8, "max_distance_from_center": 24,
+      "pieces": [
+        { "offset": [0,0], "rotation": 0, "pool": [{ "template": "courtyard", "weight": 1 }] },
+        { "offset": [0,-17], "rotation": 0, "pool": [{ "template": "wall", "weight": 1 }] },
+        { "offset": [-17,0], "rotation": 1, "pool": [{ "template": "wall", "weight": 1 }] },
+        { "offset": [17,0], "rotation": 1, "pool": [{ "template": "wall", "weight": 1 }] },
+        { "offset": [0,17], "rotation": 0, "pool": [{ "template": "gate", "weight": 1 }] },
+        { "offset": [-17,-17], "rotation": 0, "pool": [{ "template": "tower", "weight": 1 }] },
+        { "offset": [17,-17], "rotation": 1, "pool": [{ "template": "tower", "weight": 1 }] },
+        { "offset": [17,17], "rotation": 2, "pool": [{ "template": "tower", "weight": 1 }] },
+        { "offset": [-17,17], "rotation": 3, "pool": [{ "template": "tower", "weight": 1 }] },
+        { "offset": [0,-5], "rotation": 0, "pool": [{ "template": "keep", "weight": 1 }] }
+      ]
+    }
+  ]
+}

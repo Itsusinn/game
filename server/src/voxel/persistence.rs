@@ -236,8 +236,8 @@ mod tests {
     fn signed_generated_columns_roundtrip_and_missing_column_is_not_regenerated() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
-        let mut w = VoxelWorld::new(17);
-        terrain::ensure_column(&mut w.terrain, 17, [-3, 7]);
+        let mut w = VoxelWorld::fixture(17);
+        terrain::ensure_column(&mut w.terrain, 17, [-3, 7]).unwrap();
         w.terrain.set([-40, 20, 115], PLANK);
         w.items.push(GroundItem3d {
             id: 70,
@@ -266,8 +266,8 @@ mod tests {
     fn v6_height_upgrade_preserves_edits_and_backs_up_all_archives() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
-        let mut w = VoxelWorld::new(17);
-        terrain::ensure_column(&mut w.terrain, 17, [-3, 7]);
+        let mut w = VoxelWorld::fixture(17);
+        terrain::ensure_column(&mut w.terrain, 17, [-3, 7]).unwrap();
         // Build an actual old-format fixture with only old block IDs and two sections.
         for blocks in w.terrain.blocks.values_mut() {
             for b in blocks {
@@ -335,7 +335,7 @@ mod tests {
     fn v5_migration_preserves_old_area_players_and_dead_monsters() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
-        let mut w = VoxelWorld::new(17);
+        let mut w = VoxelWorld::fixture(17);
         w.npcs.clear();
         register(&mut w, 1, [8; 16], "Old explorer");
         w.players.get_mut(&1).unwrap().hp = 63;
@@ -389,7 +389,7 @@ mod tests {
         assert!(migrated.npcs.is_empty());
         assert_eq!(migrated.terrain, w.terrain);
         assert_eq!(migrated.saved_players[&[8; 16]].health, 63.0);
-        terrain::ensure_column(&mut migrated.terrain, 17, [-1, 0]);
+        terrain::ensure_column(&mut migrated.terrain, 17, [-1, 0]).unwrap();
         migrated.save(&path).unwrap();
         let restored = VoxelWorld::load(&path).unwrap();
         assert!(restored.terrain.has_column([-1, 0]));
@@ -406,7 +406,7 @@ mod tests {
     fn entities_restore_motion_health_identity_and_attack_cooldown() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
-        let mut w = VoxelWorld::new(12345);
+        let mut w = VoxelWorld::fixture(12345);
         w.tick = 100;
         for npc in w.npcs.query_mut::<&mut Npc>() {
             npc.actor.hp = 17;
@@ -485,7 +485,7 @@ mod tests {
     fn v4_migration_backs_up_manifest_and_retains_both_archives() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
-        let mut w = VoxelWorld::new(42);
+        let mut w = VoxelWorld::fixture(42);
         register(&mut w, 1, [1; 16], "Legacy");
         w.save(&path).unwrap();
         let bytes = std::fs::read(&path).unwrap();
@@ -560,7 +560,7 @@ mod tests {
     fn missing_corrupt_or_mismatched_entities_never_regenerate_world() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
-        VoxelWorld::new(42).save(&path).unwrap();
+        VoxelWorld::fixture(42).save(&path).unwrap();
         let original = std::fs::read(&path).unwrap();
         let mut save: Save = rmp_serde::from_slice(&original[8..]).unwrap();
         let generation = save.entity_archive.clone().unwrap();
@@ -601,7 +601,7 @@ mod tests {
     fn checkpoint_restores_uuid_slots_health_motion_and_camera_after_rename() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
-        let mut w = VoxelWorld::new(12345);
+        let mut w = VoxelWorld::fixture(12345);
         w.npcs.clear();
         register(&mut w, 1, [1; 16], "Before");
         let p = w.players.get_mut(&1).unwrap();
@@ -648,7 +648,7 @@ mod tests {
     fn interrupted_commit_never_mixes_chest_and_inventory_generations() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
-        let mut w = VoxelWorld::new(1);
+        let mut w = VoxelWorld::fixture(1);
         w.npcs.clear();
         register(&mut w, 1, [1; 16], "Player");
         w.players.get_mut(&1).unwrap().inventory.slots[0] = Some(InventoryEntry {
@@ -733,7 +733,7 @@ mod tests {
     fn v2_backup_and_blocked_position_preserve_inventory() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
-        let w = VoxelWorld::new(1);
+        let w = VoxelWorld::fixture(1);
         let mut bytes = b"DNG3D001".to_vec();
         bytes.extend(
             rmp_serde::to_vec(&(
@@ -770,7 +770,7 @@ mod tests {
     fn v3_migration_keeps_players_chests_items_and_original_archive() {
         let dir = directory();
         let path = dir.path().join("world3d.bin");
-        let mut w = VoxelWorld::new(47);
+        let mut w = VoxelWorld::fixture(47);
         register(&mut w, 1, [3; 16], "Legacy");
         w.players.get_mut(&1).unwrap().inventory.selected = 8;
         w.containers

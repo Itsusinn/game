@@ -1,6 +1,7 @@
 extends SceneTree
 var failed := false
 var scene: Node3D
+var chest_position: Vector3
 
 func check(condition: bool, message: String) -> void:
 	if condition: print("PASS: ", message)
@@ -19,7 +20,7 @@ func settle(until: Callable) -> bool:
 
 func open_chest() -> bool:
 	var eye: Vector3 = scene.state.body_position + Vector3(0,1.58,0)
-	var offset := Vector3(26.5,7.5,30.5) - eye
+	var offset := chest_position + Vector3(0.5,0.5,0.5) - eye
 	scene.yaw = atan2(offset.x,-offset.z)
 	scene.pitch = atan2(offset.y,Vector2(offset.x,offset.z).length())
 	scene.captured = true
@@ -32,6 +33,12 @@ func open_chest() -> bool:
 	return await settle(func(): return scene.hud.container_open)
 
 func run() -> void:
+	var fixture = JSON.parse_string(FileAccess.get_file_as_string("res://../target/spawn-site.json"))
+	if not fixture is Dictionary:
+		push_error("Run natural_spawn_is_safe_seeded_and_supports_sixteen_players first")
+		quit(1)
+		return
+	chest_position = Vector3(fixture.chest[0],fixture.chest[1],fixture.chest[2])
 	var previous_save := OS.get_environment("CDDA_SAVE_PATH")
 	var path := ProjectSettings.globalize_path("res://../target/godot-chest-%d/world3d.bin" % Time.get_ticks_usec())
 	OS.set_environment("CDDA_SAVE_PATH",path)
@@ -45,7 +52,7 @@ func run() -> void:
 	scene._singleplayer()
 	check(await settle(func(): return scene.state.ready),"chest test starts isolated single-player authority")
 	for i in range(30):
-		scene.bridge.advance(1.0/30.0,{"forward":1.0 if i < 12 else 0.0,"strafe":1.0 if i < 12 else -1.0,"pickup":true})
+		scene.bridge.advance(1.0/30.0,{"pickup":true})
 		await create_timer(1.0/30.0).timeout
 	check(await settle(func(): return scene.state.pending == 0 and not scene.state.inventory.is_empty()),"collect existing world item for storage")
 	var bag_key := InputEventKey.new()

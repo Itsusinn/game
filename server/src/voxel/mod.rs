@@ -4,6 +4,10 @@ mod editing;
 mod inventory;
 mod persistence;
 pub use persistence::lock_world;
+#[cfg(test)]
+mod legacy_fixture;
+#[cfg(test)]
+mod spawn_tests;
 mod streaming;
 mod terrain;
 use anyhow::{Context, Result};
@@ -57,13 +61,85 @@ pub struct VoxelWorld {
     containers: BTreeMap<[i32; 3], ContainerSnapshot>,
     saved_players: BTreeMap<[u8; 16], crate::player_data::PlayerData>,
     save_path: Option<std::path::PathBuf>,
+    spawn_sites: Vec<[f32; 3]>,
 }
 impl VoxelWorld {
-    pub fn new(seed: u64) -> Self {
-        Self::with_map(seed, terrain::generate(seed))
+    /// Validate the embedded generation assets before accepting a session.
+    pub fn validate_generation() -> Result<()> {
+        terrain::validate_structures()
+    }
+    pub fn new(seed: u64) -> Result<Self> {
+        let mut world = Self::with_map(seed, terrain::generate(seed)?);
+        world.npcs.clear();
+        let spawn = *world.spawn_sites.first().context("no safe spawn surface")?;
+        world.items[0].position = spawn;
+        // Retain the initial empty chest, but place it on nearby natural ground.
+        let chest = world
+            .spawn_sites
+            .iter()
+            .copied()
+            .find(|p| {
+                let d = distance(*p, spawn);
+                (2.0..=3.0).contains(&d)
+                    && (p[1] - spawn[1]).abs() <= 1.0
+                    && clear_line(
+                        [spawn[0], spawn[1] + 1.58, spawn[2]],
+                        [p[0], p[1] + 0.5, p[2]],
+                        |p| world.terrain.solid(p),
+                    )
+            })
+            .or_else(|| {
+                world
+                    .spawn_sites
+                    .iter()
+                    .copied()
+                    .filter(|p| distance(*p, spawn) >= 2.0)
+                    .min_by(|a, b| distance(*a, spawn).total_cmp(&distance(*b, spawn)))
+            });
+        if let Some(position) = chest {
+            world.terrain.set(position.map(|v| v.floor() as i32), CHEST);
+            world.containers = containers::empty_containers(&world.terrain);
+        }
+        let mut positions = Vec::new();
+        for p in world.spawn_sites.iter().copied() {
+            if distance(p, spawn) < 18.0 || positions.iter().any(|q| distance(*q, p) < 4.0) {
+                continue;
+            }
+            positions.push(p);
+            if positions.len() == 3 {
+                break;
+            }
+        }
+        for (i, p) in positions.into_iter().enumerate() {
+            world.npcs.spawn((Npc {
+                uuid: *uuid::Uuid::new_v4().as_bytes(),
+                actor: Actor3d {
+                    id: (1 << 31) + i as u32,
+                    kind: 1,
+                    position: p,
+                    yaw: 0.0,
+                    hp: 30,
+                    max_hp: 30,
+                },
+                body: Body {
+                    position: p,
+                    grounded: true,
+                    ..Default::default()
+                },
+                attack_tick: 0,
+            },));
+        }
+        Ok(world)
+    }
+    #[cfg(test)]
+    fn fixture(seed: u64) -> Self {
+        Self::with_map(seed, legacy_fixture::generate(seed))
     }
     fn with_map(seed: u64, terrain: Grid) -> Self {
+        let spawn_sites = terrain::spawn_sites(&terrain);
         let containers = containers::empty_containers(&terrain);
+        // Legacy saves without entity archives retain their original actors.
+        // New worlds replace these positions with safe natural surfaces above.
         let mut npcs = hecs::World::new();
         for (i, p) in [[31.5, 7.0, 21.5], [41.5, 7.0, 27.5], [19.5, 7.0, 42.5]]
             .into_iter()
@@ -103,6 +179,7 @@ impl VoxelWorld {
             containers,
             saved_players: BTreeMap::new(),
             save_path: None,
+            spawn_sites,
         }
     }
     pub fn player_count(&self) -> usize {
@@ -165,20 +242,15 @@ impl VoxelWorld {
         }
     }
     fn spawn_position(&self, exclude: u32) -> Option<[f32; 3]> {
-        (0..16)
-            .map(|slot| {
-                [
-                    28.5 + (slot % 4) as f32 * 2.0,
-                    7.0,
-                    32.5 + (slot / 4) as f32 * 2.0,
-                ]
+        self.spawn_sites
+            .iter()
+            .filter_map(|p| {
+                terrain::standing_position(&self.terrain, p[0].floor() as i32, p[2].floor() as i32)
             })
             .find(|&position| {
-                !overlaps(position, &|p| self.terrain.solid(p))
-                    && self
-                        .players
-                        .iter()
-                        .all(|(&id, p)| id == exclude || distance(p.body.position, position) > 1.0)
+                self.players
+                    .iter()
+                    .all(|(&id, p)| id == exclude || distance(p.body.position, position) > 1.0)
                     && self
                         .npcs
                         .query::<&Npc>()
@@ -465,6 +537,7 @@ impl VoxelWorld {
         }
     }
     pub fn load(path: &Path) -> Result<Self> {
+        Self::validate_generation()?;
         let bytes = std::fs::read(path).context("read 3D world")?;
         anyhow::ensure!(bytes.starts_with(b"DNG3D001"),"not a 3D save; legacy 2D saves are preserved and require explicit migration. Use a new CDDA_SAVE_PATH");
         let saved: Save = rmp_serde::from_slice(&bytes[8..]).context("decode 3D world")?;
@@ -652,7 +725,7 @@ mod tests {
     use super::*;
     #[test]
     fn enemy_damage_respawns_player_without_losing_inventory() {
-        let mut w = VoxelWorld::new(1);
+        let mut w = VoxelWorld::fixture(1);
         let (tx, mut rx) = mpsc::channel(64);
         w.register_player(1, tx).unwrap();
         while rx.try_recv().is_ok() {}
@@ -699,7 +772,7 @@ mod tests {
     }
     #[test]
     fn melee_requires_reach_facing_line_of_sight_and_cooldown() {
-        let mut w = VoxelWorld::new(1);
+        let mut w = VoxelWorld::fixture(1);
         let (tx, _rx) = mpsc::channel(64);
         w.register_player(1, tx).unwrap();
         w.npcs.clear();
@@ -751,7 +824,7 @@ mod tests {
     }
     #[test]
     fn pickup_is_authoritative_and_reconnect_uses_a_free_spawn() {
-        let mut w = VoxelWorld::new(1);
+        let mut w = VoxelWorld::fixture(1);
         let (tx1, _rx1) = mpsc::channel(64);
         let (tx2, _rx2) = mpsc::channel(64);
         let (tx3, _rx3) = mpsc::channel(64);
@@ -775,7 +848,7 @@ mod tests {
     }
     #[test]
     fn slow_clients_are_removed_without_blocking_the_tick() {
-        let mut w = VoxelWorld::new(1);
+        let mut w = VoxelWorld::fixture(1);
         let (tx, _rx) = mpsc::channel(32);
         for seq in 0..32 {
             tx.try_send(ServerMessage::Pong { seq }).unwrap();
@@ -788,7 +861,7 @@ mod tests {
     fn save_roundtrip_rejects_legacy_without_touching_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("world.bin");
-        let w = VoxelWorld::new(42);
+        let w = VoxelWorld::fixture(42);
         w.save(&path).unwrap();
         let loaded = VoxelWorld::load(&path).unwrap();
         assert_eq!(loaded.terrain.blocks, w.terrain.blocks);
@@ -799,7 +872,7 @@ mod tests {
     }
     #[test]
     fn input_overflow_is_rejected_without_advancing_sequence_or_simulation() {
-        let mut w = VoxelWorld::new(42);
+        let mut w = VoxelWorld::fixture(42);
         let (tx, _rx) = mpsc::channel(64);
         w.register_player(1, tx).unwrap();
         let start = w.players[&1].body;
@@ -823,7 +896,7 @@ mod tests {
 
     #[test]
     fn server_consumes_at_most_one_input_per_tick_and_acks_execution() {
-        let mut w = VoxelWorld::new(42);
+        let mut w = VoxelWorld::fixture(42);
         let (tx, mut rx) = mpsc::channel(64);
         w.register_player(1, tx).unwrap();
         let start = w.players[&1].body.position;

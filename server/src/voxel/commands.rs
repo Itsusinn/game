@@ -112,7 +112,7 @@ impl VoxelWorld {
                     for x in -1..=1 {
                         let column = [center[0] + x, center[1] + z];
                         if valid_column(column) {
-                            terrain::ensure_column(&mut self.terrain, self.world_seed, column);
+                            terrain::ensure_column(&mut self.terrain, self.world_seed, column)?;
                         }
                     }
                 }
@@ -164,7 +164,7 @@ mod tests {
     use super::*;
 
     fn world() -> (VoxelWorld, mpsc::Receiver<ServerMessage>) {
-        let mut w = VoxelWorld::new(42);
+        let mut w = VoxelWorld::fixture(42);
         w.npcs.clear();
         let (tx, rx) = mpsc::channel(256);
         w.register_player(1, tx).unwrap();
@@ -274,9 +274,11 @@ mod tests {
             .contains("复活"));
         assert_eq!(w.players[&1].body, original);
         w.players.get_mut(&1).unwrap().hp = 100;
-        for slot in 0..16 {
-            w.terrain
-                .set([28 + slot % 4 * 2, 7, 32 + slot / 4 * 2], STONE);
+        for p in w.spawn_sites.clone() {
+            w.terrain.set(
+                [p[0].floor() as i32, WORLD_HEIGHT - 1, p[2].floor() as i32],
+                STONE,
+            );
         }
         assert!(w
             .execute_command(1, "/spawn")

@@ -3,105 +3,95 @@ use protocol::*;
 
 #[path = "ecology.rs"]
 mod ecology;
+#[path = "structures.rs"]
+mod structures;
+
+/// Highest dry, walkable surface with sky above and room for a player.
+pub(super) fn standing_position(map: &Grid, x: i32, z: i32) -> Option<[f32; 3]> {
+    for y in (0..WORLD_HEIGHT).rev() {
+        let block = map.get([x, y, z]);
+        if block == AIR {
+            continue;
+        }
+        if matches!(
+            block,
+            255 | WATER
+                | ICE
+                | WOOD
+                | LEAVES
+                | BIRCH_WOOD
+                | BIRCH_LEAVES
+                | PINE_WOOD
+                | PINE_LEAVES
+                | CHEST
+        ) || y + 3 >= WORLD_HEIGHT
+        {
+            return None;
+        }
+        let position = [x as f32 + 0.5, (y + 1) as f32, z as f32 + 0.5];
+        return (!game_simulation::overlaps(position, &|p| map.solid(p))).then_some(position);
+    }
+    None
+}
+
+pub(super) fn spawn_sites(map: &Grid) -> Vec<[f32; 3]> {
+    // Search only the bounded initial region; exploration must not move /spawn.
+    let mut cells = Vec::new();
+    for [cx, cz] in map.columns() {
+        if !(-4..8).contains(&cx) || !(-4..8).contains(&cz) {
+            continue;
+        }
+        for z in cz * 16..cz * 16 + 16 {
+            for x in cx * 16..cx * 16 + 16 {
+                cells.push([x, z]);
+            }
+        }
+    }
+    cells.sort_by_key(|p| {
+        let [x, z] = p.map(|v| v.div_euclid(16));
+        (
+            (-x).max(x - 3).max(-z).max(z - 3).max(0),
+            (p[0] - 28).pow(2) + (p[1] - 32).pow(2),
+            p[1],
+            p[0],
+        )
+    });
+    cells
+        .into_iter()
+        .filter_map(|[x, z]| standing_position(map, x, z))
+        .collect()
+}
+
+pub(super) fn generate(seed: u64) -> anyhow::Result<Grid> {
+    let mut map = Grid::unknown();
+    // Usually the first 4x4 columns suffice. Expand only if the origin is water
+    // or lacks safe ground. Never create an artificial island/platform fallback.
+    for radius in 0..=4 {
+        for z in -radius..4 + radius {
+            for x in -radius..4 + radius {
+                ensure_column(&mut map, seed, [x, z])?;
+            }
+        }
+        if spawn_sites(&map).len() >= 64 {
+            return Ok(map);
+        }
+    }
+    anyhow::bail!("出生区域没有足够的安全陆地，请使用其他世界种子。")
+}
+
+pub(super) fn validate_structures() -> anyhow::Result<()> {
+    structures::catalog().map(|_| ())
+}
 
 /// World-coordinate generation is independent of exploration order.
-pub(super) fn ensure_column(map: &mut Grid, seed: u64, c: [i32; 2]) {
+pub(super) fn ensure_column(map: &mut Grid, seed: u64, c: [i32; 2]) -> anyhow::Result<()> {
     if map.has_column(c) || !valid_column(c) {
-        return;
+        return Ok(());
     }
-    let blocks = ecology::column(seed, c);
+    let mut blocks = ecology::column(seed, c);
+    structures::apply_column(seed, c, &mut blocks)?;
     for (y, section) in blocks.as_chunks::<4096>().0.iter().enumerate() {
         map.apply_chunk([c[0] * 16, y as i32 * 16, c[1] * 16], section);
     }
-}
-pub fn generate(seed: u64) -> Grid {
-    let mut map = Grid::empty();
-    for z in 0..64 {
-        for x in 0..64 {
-            let h = if (19..=45).contains(&x) && (17..=45).contains(&z) {
-                6
-            } else {
-                5 + ((x as f32 * 0.16).sin() * 1.5 + (z as f32 * 0.19).cos() * 1.5) as i32
-            };
-            for y in 0..=h {
-                map.set(
-                    [x, y, z],
-                    if y == h {
-                        GRASS
-                    } else if y > h - 3 {
-                        DIRT
-                    } else {
-                        STONE
-                    },
-                );
-            }
-            if (x < 18 || z < 15 || x > 47 || z > 48)
-                && (x as u64 * 73 + z as u64 * 193)
-                    .wrapping_add(seed)
-                    .is_multiple_of(53)
-                && x > 3
-                && z > 3
-                && x < 60
-                && z < 60
-            {
-                for y in h + 1..=h + 4 {
-                    map.set([x, y, z], WOOD);
-                }
-                for dy in 3..=6 {
-                    for dz in -2i32..=2 {
-                        for dx in -2i32..=2 {
-                            if dx.abs() + dz.abs() <= 3 && (dy < 6 || dx.abs() + dz.abs() <= 1) {
-                                map.set([x + dx, h + dy, z + dz], LEAVES);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // An open stone shelter, timber floor, window openings and reachable roof.
-    for z in 19..=27 {
-        for x in 23..=34 {
-            map.set([x, 6, z], PLANK);
-            if x == 23 || x == 34 || z == 19 || z == 27 {
-                for y in 7..=10 {
-                    let doorway = z == 27 && (28..=29).contains(&x) && y < 10;
-                    let window = y == 9
-                        && ((x == 23 || x == 34) && (22..=24).contains(&z)
-                            || z == 19 && (26..=30).contains(&x));
-                    if !doorway && !window {
-                        map.set([x, y, z], STONE);
-                    }
-                }
-            }
-            if z <= 22 {
-                map.set([x, 11, z], PLANK);
-            }
-        }
-    }
-    for i in 0..4 {
-        for x in 35..=36 {
-            for y in 7..=7 + i {
-                map.set([x, y, 26 - i], STONE);
-            }
-        }
-    }
-    // Low stepping blocks and a raised platform demonstrate real vertical collision.
-    for i in 0..3 {
-        map.set([24 - i, 7 + i, 35], STONE);
-    }
-    for z in 34..=38 {
-        for x in 17..=21 {
-            map.set([x, 9, z], PLANK);
-        }
-    }
-    // A shallow pool has a solid bed, no swimming system in this milestone.
-    for z in 34..=39 {
-        for x in 39..=44 {
-            map.set([x, 6, z], WATER);
-            map.set([x, 5, z], STONE);
-        }
-    }
-    map.set([26, 7, 30], CHEST);
-    map
+    Ok(())
 }

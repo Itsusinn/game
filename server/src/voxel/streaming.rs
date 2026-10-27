@@ -63,7 +63,12 @@ impl VoxelWorld {
                     if generation_budget == 0 {
                         break;
                     }
-                    terrain::ensure_column(&mut self.terrain, self.world_seed, c);
+                    if let Err(error) =
+                        terrain::ensure_column(&mut self.terrain, self.world_seed, c)
+                    {
+                        tracing::error!(%error, "structure generation failed");
+                        break;
+                    }
                     generation_budget -= 1;
                 }
                 let mut sent = true;
@@ -110,7 +115,7 @@ mod tests {
     }
     #[test]
     fn bounded_stream_unloads_revisits_and_never_overwrites_edits() {
-        let mut w = VoxelWorld::new(12345);
+        let mut w = VoxelWorld::fixture(12345);
         let (tx, mut rx) = mpsc::channel(64);
         w.register_player(1, tx).unwrap();
         assert!(
@@ -151,7 +156,7 @@ mod tests {
     }
     #[test]
     fn full_queue_does_not_mark_unsent_chunks_or_generate_them() {
-        let mut w = VoxelWorld::new(1);
+        let mut w = VoxelWorld::fixture(1);
         let (tx, mut rx) = mpsc::channel(SECTIONS_PER_COLUMN + 2);
         tx.try_send(ServerMessage::Pong { seq: 1 }).unwrap();
         w.register_player(1, tx).unwrap();
@@ -167,7 +172,7 @@ mod tests {
     }
     #[test]
     fn generation_budget_rotates_between_explorers() {
-        let mut w = VoxelWorld::new(17);
+        let mut w = VoxelWorld::fixture(17);
         let mut receivers = Vec::new();
         for id in 1..=3 {
             let (tx, rx) = mpsc::channel(64);
@@ -189,16 +194,16 @@ mod tests {
         let mut b = Grid::unknown();
         let columns = [[-2, -1], [-1, -1], [-1, 0], [4, 0]];
         for c in columns {
-            terrain::ensure_column(&mut a, 314, c);
+            terrain::ensure_column(&mut a, 314, c).unwrap();
         }
         for c in columns.into_iter().rev() {
-            terrain::ensure_column(&mut b, 314, c);
+            terrain::ensure_column(&mut b, 314, c).unwrap();
         }
         assert_eq!(a, b);
         assert_ne!(a.get([-1, 0, -1]), 255);
         assert_ne!(a.get([-16, 0, -1]), 255);
         let before = a.clone();
-        terrain::ensure_column(&mut a, 9, [WORLD_LIMIT / 16, 0]);
+        terrain::ensure_column(&mut a, 9, [WORLD_LIMIT / 16, 0]).unwrap();
         assert_eq!(a, before);
     }
 }

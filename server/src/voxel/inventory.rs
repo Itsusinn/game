@@ -72,7 +72,7 @@ impl VoxelWorld {
 mod tests {
     use super::*;
     fn world() -> VoxelWorld {
-        let mut w = VoxelWorld::new(1);
+        let mut w = VoxelWorld::fixture(1);
         let (tx, _rx) = mpsc::channel(64);
         w.register_player(1, tx).unwrap();
         w

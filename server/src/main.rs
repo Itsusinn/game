@@ -16,10 +16,11 @@ async fn main() -> Result<()> {
     );
     // A failed load is fatal. Never overwrite legacy or malformed saves.
     let _lock = server::voxel::lock_world(&save_path)?;
+    VoxelWorld::validate_generation()?;
     let mut world = if save_path.exists() {
         VoxelWorld::load(&save_path)?
     } else {
-        VoxelWorld::new(12345)
+        VoxelWorld::new(12345)?
     };
     world.set_save_path(save_path.clone());
     let manager = Arc::new(Mutex::new(world));

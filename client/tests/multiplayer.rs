@@ -9,12 +9,25 @@ use server::{
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{oneshot, Mutex};
 
+fn generated_chest(world: &VoxelWorld) -> [i32; 3] {
+    for (origin, blocks) in &world.terrain.blocks {
+        if let Some(i) = blocks.iter().position(|b| *b == CHEST) {
+            return [
+                origin[0] + (i % 16) as i32,
+                origin[1] + (i / 256) as i32,
+                origin[2] + ((i / 16) % 16) as i32,
+            ];
+        }
+    }
+    panic!("generated world has no chest");
+}
+
 #[tokio::test]
 async fn stalled_authority_bounds_client_inputs_and_resumes_without_disconnect() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = endpoint.local_addr().unwrap();
-        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
+        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345).unwrap()));
         let (stop, stopped) = oneshot::channel();
         let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
             let _ = stopped.await;
@@ -92,7 +105,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = endpoint.local_addr().unwrap();
-        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
+        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345).unwrap()));
         let (stop, stopped) = oneshot::channel();
         let server = tokio::spawn(serve_endpoint(endpoint, manager, async {
             let _ = stopped.await;
@@ -100,7 +113,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         let (_e1, c1) = connect_endpoint(address, cert.clone()).await.unwrap();
         let (mut send, mut recv) = c1.open_bi().await.unwrap();
         let id = login(&mut send, &mut recv, "Commander").await;
-        snapshot(&mut recv, 0).await;
+        let initial_spawn = snapshot(&mut recv, 0).await.body.position;
         let (_e2, c2) = connect_endpoint(address, cert).await.unwrap();
         let (mut send2, mut recv2) = c2.open_bi().await.unwrap();
         login(&mut send2, &mut recv2, "Observer").await;
@@ -116,9 +129,10 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
                         || e.text.contains("已传送至")
                         || e.text.contains("已返回出生点")));
                     saw_spawn |= saw_destination
-                        && s.actors
-                            .iter()
-                            .any(|a| a.id == id && a.position == [28.5, 7.0, 32.5]);
+                        && s.actors.iter().any(|a| {
+                            a.id == id
+                                && game_simulation::distance(a.position, initial_spawn) < 0.02
+                        });
                     saw_destination |= s
                         .actors
                         .iter()
@@ -232,7 +246,7 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
         loop {
             model.apply(read_message(&mut recv).await.unwrap());
             assert!(model.terrain.blocks.len() <= MAX_LOADED_SECTIONS);
-            if model.body.position == [28.5, 7.0, 32.5]
+            if game_simulation::distance(model.body.position, initial_spawn) < 0.02
                 && model.terrain.nearby_known(model.body.position)
             {
                 break;
@@ -252,7 +266,8 @@ async fn player_commands_sync_flight_teleport_and_private_feedback_over_quic() {
 #[tokio::test]
 async fn exploration_streams_generated_columns_unloads_and_reconnects_at_negative_position() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let mut world = VoxelWorld::new(12345);
+        let mut world = VoxelWorld::new(12345).unwrap();
+        let chest = generated_chest(&world);
         // An isolated flat runway removes randomized trees/combat from this movement test.
         for x in (-64..112).step_by(16) {
             for z in (16..48).step_by(16) {
@@ -272,7 +287,7 @@ async fn exploration_streams_generated_columns_unloads_and_reconnects_at_negativ
             }
         }
         // Preserve the existing chest block/container pair outside the runway lane.
-        world.terrain.set([26, 7, 30], CHEST);
+        world.terrain.set(chest, CHEST);
         let initial_columns = world.terrain.columns().len();
         let manager = Arc::new(Mutex::new(world));
         let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
@@ -420,7 +435,7 @@ async fn login_uuid(
 async fn block_edits_reach_both_clients_and_consume_the_selected_stack() {
     let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
     let address = endpoint.local_addr().unwrap();
-    let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
+    let manager = Arc::new(Mutex::new(VoxelWorld::new(12345).unwrap()));
     let (stop, stopped) = oneshot::channel();
     let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
         let _ = stopped.await;
@@ -545,7 +560,7 @@ async fn block_edits_reach_both_clients_and_consume_the_selected_stack() {
 async fn stable_uuid_reconnects_after_rename_and_rejects_duplicate_online_identity() {
     let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
     let address = endpoint.local_addr().unwrap();
-    let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
+    let manager = Arc::new(Mutex::new(VoxelWorld::new(12345).unwrap()));
     let (stop, stopped) = oneshot::channel();
     let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
         let _ = stopped.await;
@@ -618,7 +633,8 @@ async fn shared_chest_transfers_over_quic_reject_stale_requests_and_survive_reop
     tokio::time::timeout(Duration::from_secs(20), async {
         let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = endpoint.local_addr().unwrap();
-        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
+        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345).unwrap()));
+        let position = generated_chest(&*manager.lock().await);
         let (stop, stopped) = oneshot::channel();
         let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
             let _ = stopped.await;
@@ -627,15 +643,13 @@ async fn shared_chest_transfers_over_quic_reject_stale_requests_and_survive_reop
         let (mut s1, mut r1) = c1.open_bi().await.unwrap();
         login(&mut s1, &mut r1, "ChestAlice").await;
         snapshot(&mut r1, 0).await;
-        // Collect an existing world item, then approach the generated chest.
+        // Supplies and the chest now follow natural safe ground.
         for seq in 1..=30 {
             write_message(
                 &mut s1,
                 &ClientMessage::Input3d {
                     seq,
                     input: PlayerInput {
-                        forward: if seq <= 12 { 1.0 } else { 0.0 },
-                        strafe: if seq <= 12 { 1.0 } else { -1.0 },
                         pickup: true,
                         ..Default::default()
                     },
@@ -712,7 +726,44 @@ async fn shared_chest_transfers_over_quic_reject_stale_requests_and_survive_reop
         let (mut s2, mut r2) = c2.open_bi().await.unwrap();
         login(&mut s2, &mut r2, "ChestBob").await;
         snapshot(&mut r2, 0).await;
-        let position = [26, 7, 30];
+        // Joiners can spawn on a different river bank; choose a supported approach
+        // with line of sight instead of assuming the old flat-room coordinates.
+        let approach = {
+            let w = manager.lock().await;
+            let mut candidates = Vec::new();
+            for y in position[1] - 1..=position[1] + 2 {
+                for z in position[2] - 2..=position[2] + 2 {
+                    for x in position[0] - 2..=position[0] + 2 {
+                        let p = [x as f32 + 0.5, y as f32, z as f32 + 0.5];
+                        if w.terrain.solid([x, y - 1, z])
+                            && w.terrain.get([x, y - 1, z]) != WATER
+                            && !game_simulation::overlaps(p, &|v| w.terrain.solid(v))
+                            && game_simulation::distance(p, alice.body.position) > 1.5
+                            && game_simulation::container_reachable(&w.terrain, p, position)
+                        {
+                            candidates.push(p);
+                        }
+                    }
+                }
+            }
+            *candidates
+                .first()
+                .expect("generated chest has a second safe approach")
+        };
+        write_message(
+            &mut s2,
+            &ClientMessage::Chat3d {
+                text: format!("/tp {} {} {}", approach[0], approach[1], approach[2]),
+            },
+        )
+        .await
+        .unwrap();
+        loop {
+            let state = snapshot(&mut r2, 0).await;
+            if game_simulation::distance(state.body.position, approach) < 0.1 {
+                break;
+            }
+        }
         for send in [&mut s1, &mut s2] {
             write_message(
                 send,
@@ -723,7 +774,14 @@ async fn shared_chest_transfers_over_quic_reject_stale_requests_and_survive_reop
         }
         for recv in [&mut r1, &mut r2] {
             loop {
-                if snapshot(recv, 0).await.container.is_some() {
+                let state = snapshot(recv, 0).await;
+                assert!(
+                    state.container_error.is_empty(),
+                    "chest open failed at {:?}: {}",
+                    state.body.position,
+                    state.container_error
+                );
+                if state.container.is_some() {
                     break;
                 }
             }
@@ -813,7 +871,7 @@ async fn two_clients_receive_voxels_move_jump_chat_and_disconnect_over_verified_
     tokio::time::timeout(Duration::from_secs(20), async {
         let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
         let address = endpoint.local_addr().unwrap();
-        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
+        let manager = Arc::new(Mutex::new(VoxelWorld::new(12345).unwrap()));
         let (stop, stopped) = oneshot::channel();
         let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
             let _ = stopped.await;
@@ -835,7 +893,9 @@ async fn two_clients_receive_voxels_move_jump_chat_and_disconnect_over_verified_
         };
         assert!((72..=MAX_LOADED_SECTIONS).contains(&chunks));
         assert!(map.nearby_known(initial.body.position));
-        assert!(map.solid([28, 6, 32]));
+        let mut support = initial.body.position.map(|v| v.floor() as i32);
+        support[1] -= 1;
+        assert!(map.solid(support));
         let (_e2, c2) = connect_endpoint(address, cert).await.unwrap();
         let (mut s2, mut r2) = c2.open_bi().await.unwrap();
         let id2 = login(&mut s2, &mut r2, "Bob").await;
@@ -908,7 +968,7 @@ async fn two_clients_receive_voxels_move_jump_chat_and_disconnect_over_verified_
 async fn quic_transport_delivers_3d_snapshots_and_closes_remote_session() {
     let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
     let address = endpoint.local_addr().unwrap();
-    let manager = Arc::new(Mutex::new(VoxelWorld::new(12345)));
+    let manager = Arc::new(Mutex::new(VoxelWorld::new(12345).unwrap()));
     let (stop, stopped) = oneshot::channel();
     let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
         let _ = stopped.await;
@@ -944,7 +1004,7 @@ async fn quic_transport_delivers_3d_snapshots_and_closes_remote_session() {
 async fn old_protocol_cannot_join_the_3d_world() {
     let (endpoint, cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
     let address = endpoint.local_addr().unwrap();
-    let manager = Arc::new(Mutex::new(VoxelWorld::new(1)));
+    let manager = Arc::new(Mutex::new(VoxelWorld::new(1).unwrap()));
     let (stop, stopped) = oneshot::channel();
     let server = tokio::spawn(serve_endpoint(endpoint, manager, async {
         let _ = stopped.await;
@@ -976,7 +1036,7 @@ async fn wrong_certificate_is_rejected_and_missing_file_surfaces_asynchronously(
     let (endpoint, _) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
     let address = endpoint.local_addr().unwrap();
     let (_other, wrong_cert) = make_server_endpoint("127.0.0.1:0".parse().unwrap()).unwrap();
-    let manager = Arc::new(Mutex::new(VoxelWorld::new(1)));
+    let manager = Arc::new(Mutex::new(VoxelWorld::new(1).unwrap()));
     let (stop, stopped) = oneshot::channel();
     let server = tokio::spawn(serve_endpoint(endpoint, manager.clone(), async {
         let _ = stopped.await;

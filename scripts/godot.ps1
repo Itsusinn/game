@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing','streaming','commands','streaming-perf','ecology')]
+    [ValidateSet('build','run','demo','editor','smoke','export-debug','export-release','multiplayer','containers','editing','streaming','commands','streaming-perf','ecology','structures','natural-spawn')]
     [string]$Action = 'run',
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$GameArgs
@@ -40,6 +40,16 @@ function Build-Extension([bool]$Release) {
 
 Build-Extension $false
 if ($Action -eq 'build') { exit 0 }
+if ($Action -eq 'natural-spawn') {
+    & $godotExe --path godot --script res://tests/natural_spawn.gd
+    exit $LASTEXITCODE
+}
+if ($Action -eq 'structures') {
+    & cargo test -p server --jobs 2 structure_sites_emit_fixture
+    if ($LASTEXITCODE -ne 0) { throw 'Structure fixture failed.' }
+    & $godotExe --path godot --script res://tests/structures.gd
+    exit $LASTEXITCODE
+}
 if ($Action -eq 'ecology') {
     & cargo test -p server --jobs 2 ecology_sites_cover_materials_and_emit_graphics_fixture
     if ($LASTEXITCODE -ne 0) { throw 'Ecology fixture failed.' }
@@ -65,6 +75,8 @@ if ($Action -eq 'streaming') {
     exit $LASTEXITCODE
 }
 if ($Action -eq 'containers') {
+    & cargo test -p server --jobs 2 natural_spawn_is_safe_seeded_and_supports_sixteen_players
+    if ($LASTEXITCODE -ne 0) { throw 'Natural spawn fixture failed.' }
     & $godotExe --headless --path godot --script res://tests/containers.gd
     exit $LASTEXITCODE
 }

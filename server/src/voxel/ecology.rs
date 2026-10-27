@@ -2,8 +2,9 @@
 //! No global RNG, cached world state or generation-order-dependent writes.
 use protocol::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Biome {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Biome {
     Grassland,
     Forest,
     Taiga,
@@ -12,7 +13,7 @@ enum Biome {
     Snow,
 }
 
-fn hash(seed: u64, x: i32, y: i32, z: i32) -> u64 {
+pub(super) fn hash(seed: u64, x: i32, y: i32, z: i32) -> u64 {
     let mut v = seed
         ^ (x as u64).wrapping_mul(0x9e3779b185ebca87)
         ^ (y as u64).wrapping_mul(0xc2b2ae3d27d4eb4f)
@@ -54,24 +55,20 @@ fn fbm(seed: u64, x: f32, z: f32, scale: f32) -> f32 {
 }
 
 #[derive(Clone, Copy)]
-struct Surface {
-    height: i32,
-    water: bool,
-    biome: Biome,
-    blend: f32,
+pub(super) struct Surface {
+    pub height: i32,
+    pub water: bool,
+    pub biome: Biome,
 }
 fn carved(s: Surface, y: usize, field: [f32; 2]) -> bool {
     let depth = s.height - y as i32;
     let mouth = !s.water && s.height > 35 && field[1].abs() < 0.12;
     y > 3
-        && s.blend > 0.98
         && (depth > 4 || mouth)
         && ((field[0].abs() < 0.16 && field[1].abs() < 0.23) || (field[0] > 0.48 && depth > 8))
 }
-fn surface(seed: u64, x: i32, z: i32) -> Surface {
+pub(super) fn surface(seed: u64, x: i32, z: i32) -> Surface {
     let (xf, zf) = (x as f32, z as f32);
-    let distance = (-x).max(x - 63).max(-z).max(z - 63).max(0) as f32;
-    let blend = smooth((distance / 112.0).min(1.0));
     let temp = fbm(seed ^ 0x1234, xf, zf, 176.0);
     let wet = fbm(seed ^ 0x9876, xf, zf, 144.0);
     let ridge = 1.0 - noise(seed ^ 0x5555, xf, zf, 112.0).abs();
@@ -82,8 +79,7 @@ fn surface(seed: u64, x: i32, z: i32) -> Surface {
     let river = noise(seed ^ 0x4567, xf + warp, zf - warp, 128.0).abs();
     let valley = smooth((river / 0.13).min(1.0));
     let shaped = mix(21.0, base, valley);
-    let legacy = 5.0 + ((xf * 0.16).sin() * 1.5 + (zf * 0.19).cos() * 1.5) as i32 as f32;
-    let height = mix(legacy, shaped, blend).round().clamp(2.0, 100.0) as i32;
+    let height = shaped.round().clamp(2.0, 100.0) as i32;
     let biome = if temp < -0.32 || height > 70 {
         Biome::Snow
     } else if temp < -0.10 {
@@ -100,8 +96,7 @@ fn surface(seed: u64, x: i32, z: i32) -> Surface {
     Surface {
         height,
         biome,
-        blend,
-        water: blend > 0.999 && height < 24,
+        water: height < 24,
     }
 }
 
@@ -165,7 +160,7 @@ pub(super) fn column(seed: u64, c: [i32; 2]) -> Vec<u8> {
             for y in 0..=s.height as usize {
                 let depth = s.height - y as i32;
                 let field = caves.at(x, y, z);
-                // Keep bedrock, shallow water beds and the spawn transition intact.
+                // Keep bedrock and shallow water beds intact.
                 // Dry uplands occasionally expose cave mouths at the surface.
                 if carved(s, y, field) {
                     continue;
@@ -245,9 +240,6 @@ pub(super) fn column(seed: u64, c: [i32; 2]) -> Vec<u8> {
             let h = hash(seed ^ 0xaaaa, gx, 0, gz);
             let x = gx * 5 + (h % 4) as i32;
             let z = gz * 5 + ((h >> 8) % 4) as i32;
-            if (0..64).contains(&x) && (0..64).contains(&z) {
-                continue;
-            }
             let s = surface(seed, x, z);
             let density = match s.biome {
                 Biome::Forest => 82,

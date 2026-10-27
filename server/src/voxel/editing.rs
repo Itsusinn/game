@@ -148,7 +148,13 @@ impl VoxelWorld {
 mod tests {
     use super::*;
     fn world() -> (VoxelWorld, mpsc::Receiver<ServerMessage>) {
-        let mut w = VoxelWorld::with_map(1, Grid::empty());
+        let mut map = Grid::empty();
+        for z in 0..64 {
+            for x in 0..64 {
+                map.set([x, 0, z], STONE);
+            }
+        }
+        let mut w = VoxelWorld::with_map(1, map);
         w.npcs.clear();
         w.items.clear();
         let (tx, mut rx) = mpsc::channel(128);
@@ -178,7 +184,15 @@ mod tests {
     #[test]
     fn negative_coordinate_edits_use_euclidean_chunk_ownership() {
         let (mut w, mut rx) = world();
-        super::super::terrain::ensure_column(&mut w.terrain, 1, [-1, 0]);
+        super::super::terrain::ensure_column(&mut w.terrain, 1, [-1, 0]).unwrap();
+        // Explicit empty test chamber; natural terrain can now occupy this height.
+        for z in 5..=11 {
+            for x in -12..=-9 {
+                for y in 20..=23 {
+                    w.terrain.set([x, y, z], AIR);
+                }
+            }
+        }
         w.players.get_mut(&1).unwrap().body.position = [-10.5, 20.0, 10.5];
         w.terrain.set([-11, 21, 7], STONE);
         w.terrain.set([-11, 21, 6], STONE);

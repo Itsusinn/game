@@ -92,6 +92,14 @@ godot-streaming-perf:
 godot-ecology:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 ecology
 
+# 实际图形窗口验证村庄、城堡、正负坐标区块与保存重开
+godot-structures:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 structures
+
+# 实际图形窗口验证自然出生地形、移动、返回出生点和保存重开
+godot-natural-spawn:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 natural-spawn
+
 # 使用隔离世界验证聊天指令、传送、飞行与输入隔离
 godot-commands:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/godot.ps1 commands
